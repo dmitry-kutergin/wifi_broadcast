@@ -89,7 +89,7 @@ wifibroadcast_rx_status_t *rx_status = NULL;
 void usage(void)
 {
     printf(
-            "(c)2015 befinitiv. Based on packetspammer by Andy Green.  Licensed under GPL2\n"
+            "(c)2015 befinitiv, 2017 dkutergin. Licensed under GPL2\n"
                     "\n"
                     "Usage: rx [options] <interfaces>\n\nOptions\n"
                     "-p <port>   Port number 0-255 (default 0)\n"

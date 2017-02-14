@@ -139,7 +139,7 @@ static unsigned long int last_time = 0;
 void usage(void)
 {
     printf(
-            "tx (c)2015 befinitiv. Based on packetspammer by Andy Green. Licensed under GPL2\n"
+            "tx (c)2015 befinitiv, 2017 dkutergin. Licensed under GPL2\n"
                     "\n"
                     "Usage: tx [options] <interface>\n"
                     "\n"

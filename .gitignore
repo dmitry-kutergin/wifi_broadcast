@@ -32,3 +32,7 @@
 *.dSYM/
 *.su
 /wifibroadcast.layout
+/rx
+/rx_alive_test
+/rx_status
+/tx

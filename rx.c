@@ -353,15 +353,14 @@ void tx_block(block_buffer_t * curr_buff, uint8_t force, int * done_blocks)
 
 }
 //process packet payload
-void process_payload(uint8_t *data, size_t data_len, int crc_correct,
-        block_buffer_t *block_buffer_list, uint8_t num_buffers)
+void process_payload(uint8_t *data, size_t data_len,
+        block_buffer_t *block_buffer_list)
 {
     wifi_packet_header_t *wph;
     payload_header_t * plh;
 
     unsigned int block_num;
     unsigned int packet_num;
-    unsigned int i;
     //initializing processed blocks back-log
     static int prev_done_blocks[2] = {-1, -1};
 
@@ -476,7 +475,7 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct,
 }
 //Low level packet processing before payload processing
 void process_packet(monitor_interface_t *interface, int adapter_no,
-        block_buffer_t *block_buffer_list, uint8_t num_buffers,
+        block_buffer_t *block_buffer_list,
         struct pkt_buff_t * pbuff)
 {
     struct pcap_pkthdr * ppcapPacketHeader = NULL;
@@ -557,8 +556,6 @@ void process_packet(monitor_interface_t *interface, int adapter_no,
 
 // skip radiotap checksum check to free up some CPU (bad packets are not forwarded to userspace anyway)
 //        int checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0;
-    int checksum_correct = 1;
-
 //		if(!checksum_correct)
 //			rx_status->adapter[adapter_no].wrong_crc_cnt++;
     //low-level packet counter
@@ -645,9 +642,9 @@ static void * thread_proc(void *arg)
         }
         //process packets otherwise
         process_payload(
-                &prx_data->pkt_buffer.packets[prx_data->pkt_buffer.tx_idx].data,
+                (uint8_t *)&prx_data->pkt_buffer.packets[prx_data->pkt_buffer.tx_idx].data,
                 prx_data->pkt_buffer.packets[prx_data->pkt_buffer.tx_idx].read_pkt_len,
-                prx_data->blk_buffer, prx_data->blk_num);
+                prx_data->blk_buffer);
         prx_data->pkt_buffer.tx_idx = (prx_data->pkt_buffer.tx_idx + 1)
                 % (prx_data->pkt_buffer.pkt_num);
     }
@@ -746,7 +743,7 @@ int main(int argc, char *argv[])
     rx_data.pkt_buffer.tx_idx = 0;
     rx_data.pkt_buffer.pkt_num = MAX_PACKETS_PER_BLOCK * MAX_BLOCKS;
     //allocating actual continuous packets buffer for MAX_BLOCKS, it should accomodate any DATA/FEC packets numbers combinations
-    rx_data.pkt_buffer.packets = (struct pkt_struct_rx_t *) malloc(
+    rx_data.pkt_buffer.packets = (struct packets_t *) malloc(
             sizeof(struct packets_t) * rx_data.pkt_buffer.pkt_num);
     on_exit(gc_rx_data, &rx_data);
     rx_status = status_memory_open();
@@ -803,12 +800,8 @@ int main(int argc, char *argv[])
 #endif
 
     for (;;) {
-        fd_set readset;
-        struct timeval to;
-
-        to.tv_sec = 0;
-        to.tv_usec = 1e5;
 #ifdef SELECT_EN
+        fd_set readset;
         FD_ZERO(&readset);
         for (i = 0; i < num_interfaces; ++i)
         FD_SET(interfaces[i].selectable_fd, &readset);
@@ -837,7 +830,7 @@ int main(int argc, char *argv[])
         for (i = 0; i < nfds; ++i) {
             //processing Raw packets and putting payload into the circular packet buffer in the end
             process_packet(interfaces + eearr[i].data.u32, eearr[i].data.u32,
-                    rx_data.blk_buffer, rx_data.blk_num);
+                    rx_data.blk_buffer, &rx_data.pkt_buffer);
         }
 #endif
     }

@@ -74,7 +74,7 @@ typedef struct {
 packet_buffer_t *lib_alloc_packet_buffer_list(size_t num_packets, size_t packet_length);
 void lib_free_packet_buffer_list(packet_buffer_t *p, size_t num_packets);
 
-void gc_pcap(int status, void * arg)
+void gc_pcap(int status, void * arg);
 //pthread attributes garbage collector
 void gc_pattr(int status, void * arg);
 

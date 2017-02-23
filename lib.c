@@ -52,14 +52,14 @@ void lib_free_packet_buffer(packet_buffer_t *p) {
 
 packet_buffer_t *lib_alloc_packet_buffer_list(size_t num_packets, size_t packet_length) {
 	packet_buffer_t *retval;
-	int i;
+	size_t i;
 
 	assert(num_packets > 0 && packet_length > 0);
 
 	retval = (packet_buffer_t *)malloc(sizeof(packet_buffer_t) * num_packets);
 	assert(retval != NULL);
 
-	for(i=0; i<num_packets; ++i) {
+	for(i = 0; i < num_packets; ++i) {
 		lib_init_packet_buffer(retval + i);
 		if(packet_length)
 			lib_alloc_packet_buffer(retval + i, packet_length);
@@ -69,12 +69,12 @@ packet_buffer_t *lib_alloc_packet_buffer_list(size_t num_packets, size_t packet_
 }
 
 void lib_free_packet_buffer_list(packet_buffer_t *p, size_t num_packets) {
-	int i;
+	size_t i;
 
 	assert(p != NULL && num_packets > 0);
 
-	for(i=0; i<num_packets; ++i) {
-		lib_free_packet_buffer(p+i);
+	for(i = 0; i < num_packets; ++i) {
+		lib_free_packet_buffer(p + i);
 	}
 
 	free(p);

@@ -11,12 +11,14 @@
 # Libraries
 *.lib
 *.a
+!libpcap-dev/usr/lib/arm-linux-gnueabihf/libpcap.a
 *.la
 *.lo
 
 # Shared objects (inc. Windows DLLs)
 *.dll
 *.so
+!libpcap-dev/usr/lib/arm-linux-gnueabihf/libpcap.so
 *.so.*
 *.dylib
 

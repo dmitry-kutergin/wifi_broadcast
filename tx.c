@@ -285,7 +285,7 @@ void fifo_init(fifo_t *fifo, uint8_t fifo_count, uint8_t block_size_data,
 //FIFO structure garbage collector
 void fifo_gc(fifo_t *fifo)
 {
-    int i;
+    unsigned int i;
 #ifdef INTERLEAVED
     free(fifo->interleaved_pkt);
 #endif
@@ -426,7 +426,7 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
             sched_yield();
         }
         if (r != plen) {
-            pcap_perror(fifo->ppcap_arr[i], "Trouble injecting packet");
+            pcap_perror(fifo->ppcap_arr[i], (char *)"Trouble injecting packet");
             //exit(1);
         }
         //sent bytes counter for tx statistics
@@ -706,9 +706,9 @@ int main(int argc, char *argv[])
     int param_transmission_count = 1;
     int param_data_packets_per_block = 1;
     int param_fec_packets_per_block = 1;
-    int param_packet_length = MAX_USER_PACKET_LENGTH;
+    size_t param_packet_length = MAX_USER_PACKET_LENGTH;
     int param_port = 0;
-    int param_min_packet_length = 0;
+    size_t param_min_packet_length = 0;
     int param_fifo_count = 1;
     int param_injection_rate = 24;
     int param_frame_rate = 80;
@@ -798,14 +798,14 @@ int main(int argc, char *argv[])
     if (param_packet_length > MAX_USER_PACKET_LENGTH) {
         fprintf(stderr,
                 "Packet length is limited to %d bytes (you requested %d bytes)\n",
-                MAX_USER_PACKET_LENGTH, param_packet_length);
+                MAX_USER_PACKET_LENGTH, (int)param_packet_length);
         return (1);
     }
 
     if (param_min_packet_length > param_packet_length) {
         fprintf(stderr,
                 "Your minimum packet length is higher that your maximum packet length (%d > %d)\n",
-                param_min_packet_length, param_packet_length);
+                (int)param_min_packet_length, (int)param_packet_length);
         param_min_packet_length = param_packet_length;
     }
 
@@ -1038,7 +1038,7 @@ int main(int argc, char *argv[])
             struct pkt_struct_t * ps = (struct pkt_struct_t *) pb->data;
             int inl = read(fifo.fifo_array[i].fd, ps->payload + pb->len,
                     param_packet_length - pb->len);
-            if ((inl < 0) || (inl > (param_packet_length - pb->len))) {
+            if ((inl < 0) || (inl > (int)(param_packet_length - pb->len))) {
                 perror("reading stdin");
                 return 1;
             }

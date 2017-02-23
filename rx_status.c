@@ -58,7 +58,7 @@ int main(int argc, char *argv[]) {
 	int best_dbm = 0;
 	int cardcounter = 0;
 	int number_cards = t->wifi_adapter_cnt;
-	int restarts = 0;
+	unsigned int restarts = 0;
 
 	for(;;) {
         	best_dbm = -1000;

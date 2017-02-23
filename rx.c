@@ -192,7 +192,7 @@ void open_and_configure_interface(const char *name, int port,
 void block_buffer_list_reset(block_buffer_t *block_buffer_list,
         size_t block_buffer_list_len, int block_buffer_len)
 {
-    int i;
+	size_t i;
     block_buffer_t *rb = block_buffer_list;
 
     for (i = 0; i < block_buffer_list_len; ++i) {
@@ -359,8 +359,8 @@ void process_payload(uint8_t *data, size_t data_len,
     wifi_packet_header_t *wph;
     payload_header_t * plh;
 
-    unsigned int block_num;
-    unsigned int packet_num;
+    int block_num;
+    int packet_num;
     //initializing processed blocks back-log
     static int prev_done_blocks[2] = {-1, -1};
 
@@ -486,7 +486,7 @@ void process_packet(monitor_interface_t *interface, int adapter_no,
     int bytes;
     int n;
     int retval;
-    int u16HeaderLen;
+    unsigned int u16HeaderLen;
 
     // receive raw packet from PCAP handle to the interface
     retval = pcap_next_ex(interface->ppcap, &ppcapPacketHeader,
@@ -743,8 +743,8 @@ int main(int argc, char *argv[])
     rx_data.pkt_buffer.tx_idx = 0;
     rx_data.pkt_buffer.pkt_num = MAX_PACKETS_PER_BLOCK * MAX_BLOCKS;
     //allocating actual continuous packets buffer for MAX_BLOCKS, it should accomodate any DATA/FEC packets numbers combinations
-    rx_data.pkt_buffer.packets = (struct packets_t *) malloc(
-            sizeof(struct packets_t) * rx_data.pkt_buffer.pkt_num);
+    rx_data.pkt_buffer.packets = (struct pkt_buff_t::packets_t *) malloc(
+            sizeof(struct pkt_buff_t::packets_t) * rx_data.pkt_buffer.pkt_num);
     on_exit(gc_rx_data, &rx_data);
     rx_status = status_memory_open();
     rx_status->wifi_adapter_cnt = num_interfaces;

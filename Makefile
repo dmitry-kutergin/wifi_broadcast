@@ -16,8 +16,8 @@ endif
 LDFLAGS=$(LIBS) -lrt -lpcap -pthread
 CPPFLAGS=-Wall -g $(INCLUDE)
 
-all: rx tx rx_status rx_alive_test
-armhf: rx tx rx_status rx_alive_test
+all: rx tx rx_status rx_alive_test traffic_gen
+armhf: rx tx rx_status rx_alive_test traffic_gen
 
 
 %.o: %.c
@@ -38,6 +38,6 @@ rx_alive_test: rx_alive_test.o
 
 
 clean:
-	rm -f rx tx rx_status rx_alive_test *~ *.o
+	rm -f rx tx rx_status rx_alive_test traffic_gen *~ *.o
 
 .PHOHY: all clean armhf

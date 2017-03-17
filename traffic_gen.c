@@ -130,24 +130,27 @@ int main(int argc, char *argv[])
 
 		if(nsec_needed < 0) {
 			nsec_needed = 0;
-			tr_size += ++step_up;
+			tr_size += step_up++;
 			step_down = 1;
 		} else if (nsec_needed < 2000) {
-			tr_size += ++step_up;
+			tr_size += step_up++;
 			step_down = 1;
 		} else {
 			byte_count += tr_size_bytes;
 			if(++byte_count > run_opts.tx_rate_set / 2) {
 				step_up = 1;
+				if(run_opts.verbosity > 1) {
+					fprintf(stderr, "Before: step_down=%d, step_up=%d, sdv_target %.2f\n", step_down, step_up, run_opts.sdv_target);
+				}
 				if(tr_size > step_down) {
-					tr_size -= step_down;
-					step_down++;
+					tr_size -= step_down++;
+//					step_down++;
 				} else {
 					step_down = 1;
 				}
-				if (sqrt(sum_dv / sample_count) > run_opts.sdv_target){
+				if ((100 * sqrt(sum_dv / sample_count) / (float)mean_rate) > run_opts.sdv_target){
 					step_down = 1;
-					tr_size += ++step_up;
+					tr_size += step_up++;
 				}
 				byte_count = 0;
 				if(run_opts.verbosity > 0) {
@@ -163,6 +166,9 @@ int main(int argc, char *argv[])
 				nsec_delay_mean = nsec_delay_sum / sample_count;
 				nsec_delay_sum = 0;
 				sample_count = 0;
+				if(run_opts.verbosity > 1) {
+					fprintf(stderr, "After: step_down=%d, step_up=%d, sdv_target %.2f\n", step_down, step_up, run_opts.sdv_target);
+				}
 			}
 
 		}
@@ -177,7 +183,7 @@ int main(int argc, char *argv[])
 			uint64_t nsec_target = (ts_after.tv_sec * 1e9 + ts_after.tv_nsec) + nsec_needed;
 			uint64_t nsec_curr;
 			if(run_opts.verbosity > 1)
-				printf("Wait for %ld ns, target= %lu ns\n", nsec_needed, nsec_target);
+				fprintf(stderr, "Wait for %ld ns, target= %lu ns\n", nsec_needed, nsec_target);
 			do {
 				clock_gettime(CLOCK_MONOTONIC, &sleep_time);
 				nsec_curr = sleep_time.tv_sec * 1e9 + sleep_time.tv_nsec;
@@ -216,7 +222,7 @@ int main(int argc, char *argv[])
 				                + sleep_time.tv_nsec) - (ts_after.tv_sec * 1e9 + ts_after.tv_nsec));
 		nsec_delay_sum += nsec_delay;
 		if(run_opts.verbosity > 1) {
-			printf(":tr_size=%d, prev_tr_size=%d, nsec_needed=%ld ns, nsec_elapsed= %ld ns, nsec_delay=%ld ns, nsec_final=%ld ns, nsec_theor=%ld ns, nsec_leftover=%ld ns\ncomputed_rate=%lu Bytes/s, result_rate=%lu Bytes/s, tx_rate=%lu\n",
+			fprintf(stderr, ":tr_size=%d, prev_tr_size=%d, nsec_needed=%ld ns, nsec_elapsed= %ld ns, nsec_delay=%ld ns, nsec_final=%ld ns, nsec_theor=%ld ns, nsec_leftover=%ld ns\ncomputed_rate=%lu Bytes/s, result_rate=%lu Bytes/s, tx_rate=%lu\n",
 				tr_size, prev_tr_size, nsec_needed, nsec_elapsed, nsec_delay, nsec_elapsed_final, nsec_theor, nsec_leftover,
 				computed_rate, result_rate, tx_rate);
 		}

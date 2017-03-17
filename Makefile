@@ -14,7 +14,7 @@ INCLUDE:=
 LIBS:= 
 endif
 LDFLAGS=$(LIBS) -lrt -lpcap -pthread
-CPPFLAGS=-Wall -g $(INCLUDE)
+CPPFLAGS=-Wall -g $(INCLUDE) -DTEST_EN
 
 all: rx tx rx_status rx_alive_test traffic_gen
 armhf: rx tx rx_status rx_alive_test traffic_gen

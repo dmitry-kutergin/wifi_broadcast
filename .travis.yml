@@ -1,6 +1,4 @@
 language: c
-env:
-- CUSTOM_FLAGS=
 before_install:
 - sudo apt-get update -qq
 - sudo apt-get install -qq linux-headers-`uname -r` libpcap0.8-dev libpcap0.8 

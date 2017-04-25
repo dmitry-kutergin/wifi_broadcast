@@ -1,5 +1,5 @@
 # wifi_broadcast
-Connection-less WiFi data transmission project
+P2P WiFi data transmission project
 
 To compile natively use:
   - make all

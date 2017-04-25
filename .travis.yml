@@ -5,3 +5,14 @@ before_install:
 - sudo apt-get update -qq
 - sudo apt-get install -qq linux-headers-`uname -r` libpcap0.8-dev libpcap0.8 
 script: make clean && make all
+deploy:
+  provider: releases
+  api_key:
+    secure: vXDQQ28iAOeCEdi68O7cRYCc1uEQqSmK2C56Fc+3JHR6zh3KsCQqkxcxkMHmKsgDLK0ph9k245mQjz9JWtlrYJ6noXuEiw4CgAQiFQ0pDT63MqVNI7CJZuS2VIWgjnxPlEltgQVwC9qnlrpaXZmFE1qQdeoO9v82iG3eKTiuj5722lKI9VDD9DB34fsXMSU6z9Ij/2hjBg+tLNOyWFLhH+ppPHJFZAotK1mbqvU3c0uNSTGN78pRUqkzxCNGluV2O52WzQJKZv31BesHlxFnXTy/VuDA8bsGRsI86PTMrAaZxCTI++13E0qzPAtoQ6pUMQd9q3GRkP/Co/HKbqD1/UmfOqW9IvN5g4UmshPab/XA6TjaSIKdCib7/1Kdlb0ffYJfobQ8O4MmvbqizmO+faxTVkhn9oDBHj17ud90Si3XHb6HMz2De45ayvVWF4hmlhfx7igspVzeMgJ7dK4q0Q55MuKnx2CMQ0EHDafTBhqWzT57Xd937yU3g7m6eqTqnAIwo3uOSNQxPqLBVyyAYt2fdKrkQ5Lz98sLBCpjOQfTyj3d5VCx/zP9hgNK37jMsz2FjuSZdrX/6ZOrnecyoQw+I0IasAUzaGOsl2ZusUaMXdCC/U7Rvy2i95jb5NhfDjgN5+nPAGKhM2wgwH31S/Y2PDsiOAYZoxSs/IeP5NA=
+  file:
+    - rx
+    - tx
+    - traffic_gen
+  skip_cleanup: true
+  on:
+    tags: true

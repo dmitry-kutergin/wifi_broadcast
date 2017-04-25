@@ -1,3 +1,5 @@
 language: c
-install: linux-headers libpcap0.8
+before_install:
+- sudo apt-get update -qq
+- sudo apt-get install -qq linux-headers libpcap0.8
 script: make clean && make all

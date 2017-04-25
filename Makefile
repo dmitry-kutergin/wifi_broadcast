@@ -9,7 +9,7 @@ INCLUDE:=-I$(TOOLS_PATH)lib \
 LIBS:=-L$(TOOLS_PATH)arm-linux-gnueabihf/libc/lib/arm-linux-gnueabihf \
 -L./libpcap-dev/usr/lib/arm-linux-gnueabihf
 else
-CC?=g++
+CC=g++
 INCLUDE:= 
 LIBS:= 
 endif

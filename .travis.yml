@@ -15,4 +15,4 @@ deploy:
     - traffic_gen
   skip_cleanup: true
   on:
-    tags: true
+    repo: dmitry-kutergin/wifi_broadcast

@@ -1,2 +1,3 @@
 language: c
+install: linux-headers libpcap0.8
 script: make clean && make all

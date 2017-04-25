@@ -1,4 +1,4 @@
-# wifi_broadcast[![BCH compliance](https://bettercodehub.com/edge/badge/dmitry-kutergin/wifi_broadcast)](https://bettercodehub.com/)
+# wifi_broadcast  [![BCH compliance](https://bettercodehub.com/edge/badge/dmitry-kutergin/wifi_broadcast)](https://bettercodehub.com/)
 P2P WiFi data transmission project
 
 To compile natively use:

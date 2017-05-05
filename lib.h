@@ -91,6 +91,9 @@ void gc_timer(int status, void * arg);
 //shared memory garbage collector
 void gc_shm(int status, void * arg);
 
+//Radiotap header TX flag addition
+#define IEEE80211_RADIOTAP_F_TX_SEQ 0x0010
+
 //linux kernel ieee80211.h header fragment
 #define IEEE80211_FCTL_TODS 0x0100
 #define IEEE80211_FTYPE_DATA 0x0008

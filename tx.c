@@ -25,11 +25,13 @@
 #include <time.h>
 #include <sched.h>
 #include <pthread.h>
+#include "radiotap/radiotap_iter.h"
+
 
 #include "fec.h"
 
 #include "lib.h"
-#include "wifibroadcast.h"
+//#include "wifibroadcast.h"
 
 //maximum injection rate in Mbytes/s
 #define INJ_RATE_MAX (19000000 / 8) //Bytes/s
@@ -41,7 +43,7 @@
 #define OVERLAY_NUM 4
 
 /* this is the template radiotap header we send packets out with */
-
+#if 0
 static u8 u8aRadiotapHeader[] = { 0x00, 0x00, // <-- radiotap version
         0x0c, 0x00, // <- radiotap header length
         0x04, 0x80, 0x00, 0x00, // <-- radiotap present flags
@@ -61,16 +63,33 @@ static u8 u8aRadiotapHeader[] = { 0x00, 0x00, // <-- radiotap version
 static u8 u8aIeeeHeader[] = { 0x08, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
         0xFF, 0xFF, 0x13, 0x22, 0x33, 0x44, 0x55, 0x66, 0x13, 0x22, 0x33, 0x44,
         0x55, 0x66, 0x10, 0x86 };
-//size of all aux headers in transmitted packet
-#define PACKET_OVERHEAD (sizeof(u8aRadiotapHeader) + sizeof(u8aIeeeHeader) + sizeof(wifi_packet_header_t) + sizeof(payload_header_t))
+
+#endif
+
+
+struct tRadiotapHeader {
+	struct ieee80211_radiotap_header radiotap_header;
+	uint8_t DataRate;
+	uint16_t TxFlags;
+}__attribute__((packed));
+
 //transmitting packet structure
 struct pkt_struct_t {
-    uint8_t RadiotapHeader[sizeof(u8aRadiotapHeader)];
-    uint8_t IeeeHeader[sizeof(u8aIeeeHeader)];
+	union {
+		uint8_t bRadiotapHeader[sizeof(struct tRadiotapHeader)];
+		struct tRadiotapHeader sRadiotapHeader;
+	} RadiotapHeader;
+	union {
+		uint8_t bIeeeHeader[sizeof(struct ieee80211_hdr_3addr)];
+		struct ieee80211_hdr_3addr sIeeeHeader;
+	} IeeeHeader ;
     wifi_packet_header_t wifi_hdr;
     payload_header_t payload_hdr;
     uint8_t payload[MAX_USER_PACKET_LENGTH];
 }__attribute__((packed));
+
+//size of all aux headers in transmitted packet
+#define PACKET_OVERHEAD (sizeof(struct tRadiotapHeader) + sizeof(struct ieee80211_hdr_3addr) + sizeof(wifi_packet_header_t) + sizeof(payload_header_t))
 //member of FIFO array
 struct fifo_arr_t {
 //	int seq_nr;
@@ -164,6 +183,8 @@ void usage(void)
             "\n", 1024, MAX_USER_PACKET_LENGTH, FIFO_NAME);
     exit(1);
 }
+
+#if 0
 //setting port number inside packet buffer
 void set_port_no(uint8_t *pu, uint8_t port)
 {
@@ -174,6 +195,7 @@ void set_port_no(uint8_t *pu, uint8_t port)
     pu[SRC_MAC_LASTBYTE] = port;
     pu[DST_MAC_LASTBYTE] = port;
 }
+
 //putting default values to packet header structures
 int packet_header_init(uint8_t *packet_header)
 {
@@ -188,11 +210,29 @@ int packet_header_init(uint8_t *packet_header)
     //determine the length of the header
     return pu8 - packet_header;
 }
+packet_buffer_t * alloc_pb(int fec_packets_per_block)
+{
+    packet_buffer_t * fec_pb = lib_alloc_packet_buffer_list(
+            fec_packets_per_block, sizeof(struct pkt_struct_t));
+    int j;
+    for (j = 0; j < fec_packets_per_block; ++j) {
+        struct pkt_struct_t * ps = (struct pkt_struct_t *) fec_pb[j].data;
+        memcpy(ps->RadiotapHeader, u8aRadiotapHeader,
+                sizeof(u8aRadiotapHeader));
+        memcpy(ps->IeeeHeader, u8aIeeeHeader, sizeof(u8aIeeeHeader));
+    }
+    return fec_pb;
+}
+#endif
 //main internal data init function, allocates all necessary buffers and sets default values
 void fifo_init(fifo_t *fifo, uint8_t fifo_count, uint8_t block_size_data,
-        uint8_t block_size_fec, uint8_t port, uint16_t packet_payload_length)
+        uint8_t block_size_fec, uint8_t port, uint16_t packet_payload_length, uint8_t inj_rate)
 {
     int i;
+    const uint8_t addr1[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    const uint8_t addr2[] = {0x02, 'w', 'i', 'f', 'i', 0};
+    const uint8_t addr3[] = {0x22, 'w', 'i', 'f', 'i', 0};
+
     //number of active FIFOs
     fifo->fifo_num = fifo_count;
     //allocation FIFO structures buffer
@@ -264,12 +304,31 @@ void fifo_init(fifo_t *fifo, uint8_t fifo_count, uint8_t block_size_data,
                 fifo->fifo_array[i].pb_overlay[k].pbl_placeholder[j].len = 0;
                 struct pkt_struct_t * ps =
                         (struct pkt_struct_t *) fifo->fifo_array[i].pb_overlay[k].pbl_placeholder[j].data;
+
+                ps->RadiotapHeader.sRadiotapHeader.radiotap_header.it_version = 0;
+                ps->RadiotapHeader.sRadiotapHeader.radiotap_header.it_pad = 0;
+                ps->RadiotapHeader.sRadiotapHeader.radiotap_header.it_len = sizeof(struct tRadiotapHeader);
+                ps->RadiotapHeader.sRadiotapHeader.radiotap_header.it_present =
+                		(1 << IEEE80211_RADIOTAP_TX_FLAGS) | (1 << IEEE80211_RADIOTAP_RATE);
+                ps->RadiotapHeader.sRadiotapHeader.DataRate = inj_rate *2;
+                ps->RadiotapHeader.sRadiotapHeader.TxFlags = IEEE80211_RADIOTAP_F_TX_NOACK | IEEE80211_RADIOTAP_F_TX_SEQ;
+
                 //initializing radio tap header
-                memcpy(ps->RadiotapHeader, u8aRadiotapHeader,
-                        sizeof(u8aRadiotapHeader));
+                /*memcpy(ps->RadiotapHeader, u8aRadiotapHeader,
+                        sizeof(u8aRadiotapHeader));*/
                 //initializing IEEE header
-                memcpy(ps->IeeeHeader, u8aIeeeHeader, sizeof(u8aIeeeHeader));
-                set_port_no(ps->RadiotapHeader, i + port);
+//                memcpy(ps->IeeeHeader, u8aIeeeHeader, sizeof(u8aIeeeHeader));
+                ps->IeeeHeader.sIeeeHeader.frame_control = IEEE80211_FCTL_TODS | IEEE80211_FTYPE_DATA;
+				ps->IeeeHeader.sIeeeHeader.duration_id = 0;
+
+				memmove(ps->IeeeHeader.sIeeeHeader.addr1, addr1, ETH_ALEN);
+				memmove(ps->IeeeHeader.sIeeeHeader.addr2, addr2, ETH_ALEN);
+				memmove(ps->IeeeHeader.sIeeeHeader.addr3, addr3, ETH_ALEN);
+				ps->IeeeHeader.sIeeeHeader.addr2[5] = i + port;
+				ps->IeeeHeader.sIeeeHeader.addr3[5] = i + port;
+				ps->IeeeHeader.sIeeeHeader.seq_ctrl=(IEEE80211_SCTL_SEQ & (0x861 << 4)) | (IEEE80211_SCTL_FRAG & 0x0);
+
+//                set_port_no(ps->RadiotapHeader, i + port);
                 //assigning payload buffer pointers to packet structure payload portions
                 fifo->fifo_array[i].pb_overlay[k].data_blocks[j] = ps->payload;
 //				fifo->fifo_array[i].pb_overlay[k].fec_blocks[j] =
@@ -327,19 +386,6 @@ void gc_fifo(int status, void * arg)
     if (fifo)
         fifo_gc(fifo);
     printf("%s\n", __PRETTY_FUNCTION__);
-}
-packet_buffer_t * alloc_pb(int fec_packets_per_block)
-{
-    packet_buffer_t * fec_pb = lib_alloc_packet_buffer_list(
-            fec_packets_per_block, sizeof(struct pkt_struct_t));
-    int j;
-    for (j = 0; j < fec_packets_per_block; ++j) {
-        struct pkt_struct_t * ps = (struct pkt_struct_t *) fec_pb[j].data;
-        memcpy(ps->RadiotapHeader, u8aRadiotapHeader,
-                sizeof(u8aRadiotapHeader));
-        memcpy(ps->IeeeHeader, u8aIeeeHeader, sizeof(u8aIeeeHeader));
-    }
-    return fec_pb;
 }
 //open FIFOs for read
 void fifo_open(fifo_t *fifo, int fifo_count)
@@ -497,9 +543,10 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
 
 //        fprintf(stderr, ">>>>>>>Packet# %d, Block# %d, packet index %ld, plen %d\n", pktnum, blknum, pktnum_all, plen);
         write(STDOUT_FILENO, data, plen);
+#endif
         if(!is_fec)
 			pktnum_all++;
-#endif
+
 #endif
         //sent bytes counter for tx statistics
         bytes_sent += plen;
@@ -931,30 +978,6 @@ int main(int argc, char *argv[])
         return (1);
     }
 
-    //injection rate adjustments according to the supplied parameter value
-    switch (param_injection_rate) {
-        case 12:
-            u8aRadiotapHeader[8] = 0x18;
-            break;
-        case 18:
-            u8aRadiotapHeader[8] = 0x24;
-            break;
-        case 24:
-            u8aRadiotapHeader[8] = 0x30;
-            break;
-        case 36:
-            u8aRadiotapHeader[8] = 0x48;
-            break;
-        case 48:
-            u8aRadiotapHeader[8] = 0x60;
-            break;
-    }
-
-    //maximum injection rate
-    param_injection_rate = param_injection_rate * 10e6 / 8;
-
-    if (param_injection_rate > INJ_RATE_MAX)
-        param_injection_rate = INJ_RATE_MAX;
     timer_t tp_timer;
     //creating statistics timer
     if (timer_create(CLOCK_MONOTONIC, NULL, &tp_timer) == -1) {
@@ -981,9 +1004,14 @@ int main(int argc, char *argv[])
 #endif
     //initialized main FIFO structure with supplied parameters
     fifo_init(&fifo, param_fifo_count, param_data_packets_per_block,
-            param_fec_packets_per_block, param_port, param_packet_length);
+            param_fec_packets_per_block, param_port, param_packet_length, param_injection_rate);
     //garbage collector push
     on_exit(gc_fifo, &fifo);
+    //maximum injection rate
+	param_injection_rate = param_injection_rate * 10e6 / 8;
+
+	if (param_injection_rate > INJ_RATE_MAX)
+		param_injection_rate = INJ_RATE_MAX;
 #ifndef TEST_EN
     char szErrbuf[PCAP_ERRBUF_SIZE];
     pcap_t *ppcap = NULL;
@@ -1155,7 +1183,7 @@ int main(int argc, char *argv[])
                 perror("reading stdin");
                 return 1;
             }
-//            printf("Read bytes %d\n", inl);
+//            printf("Read bytes %d, combined bytes: %d\n", inl, pb->len);
             if (inl == 0) {
                 //EOF
                 fprintf(stderr,
@@ -1168,7 +1196,7 @@ int main(int argc, char *argv[])
             pb->len += inl;
 
             //check if we read enough data to move tothe next packet
-            if (pb->len >= param_packet_length) {
+            if (pb->len >= param_min_packet_length) {
 //                payload_header_t *ph = (payload_header_t*)pb->data;
 //                ph->data_length = pb->len - sizeof(payload_header_t); //write the length into the packet. this is needed since with fec we cannot use the wifi packet lentgh anymore. We could also set the user payload to a fixed size but this would introduce additional latency since tx would need to wait until that amount of data has been received
                 //RX statistics counter
@@ -1315,6 +1343,7 @@ int main(int argc, char *argv[])
 //							param_injection_rate);
 //                    printf("Final packet_payload_length %d\n", fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length);
                     param_packet_length = fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length;
+                    param_min_packet_length = param_packet_length;
                     bytes_received = 0;
                 } else {
 //                	printf("not enough packets\n");

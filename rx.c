@@ -20,7 +20,7 @@
 
 #include "lib.h"
 #include "wifibroadcast.h"
-#include "radiotap.h"
+#include "radiotap/radiotap_iter.h"
 #include <sys/epoll.h>
 #include <pthread.h>
 
@@ -53,13 +53,14 @@ struct pkt_struct_rx_t {
 }__attribute__((packed));
 #define MAX_BLOCKS 8
 //Packet buffer structure
+struct packets_t {
+	uint16_t read_pkt_len;
+	struct pkt_struct_rx_t data;
+}__attribute__((packed)) * packets;
 struct pkt_buff_t {
     volatile uint16_t rx_idx;
     volatile uint16_t tx_idx;
-    struct packets_t {
-        uint16_t read_pkt_len;
-        struct pkt_struct_rx_t data;
-    }__attribute__((packed)) * packets;
+    struct packets_t * packets;
     uint16_t pkt_num;
 };
 //Data structure for RX block data
@@ -148,7 +149,7 @@ void open_and_configure_interface(const char *name, int port,
         fprintf(stderr, "Error setting %s to nonblocking mode: %s\n", name,
                 szErrbuf);
     }
-    //geting link level properties of the interface
+    //getting link level properties of the interface
     int nLinkEncap = pcap_datalink(interface->ppcap);
     //setting a filter string for ethernet MAC address field to rx packets with required port
     switch (nLinkEncap) {
@@ -156,7 +157,7 @@ void open_and_configure_interface(const char *name, int port,
             //fprintf(stderr, "DLT_PRISM_HEADER Encap\n");
             interface->n80211HeaderLength = 0x20; // ieee80211 comes after this
             sprintf(szProgram,
-                    "radio[0x4a:4]==0x13223344 && radio[0x4e:2] == 0x55%.2x",
+                    "radio[0x4a:4]==0x02776966 && radio[0x4e:2] == 0x69%.2x",
                     port);
             break;
 
@@ -164,7 +165,7 @@ void open_and_configure_interface(const char *name, int port,
             //fprintf(stderr, "DLT_IEEE802_11_RADIO Encap\n");
             interface->n80211HeaderLength = 0x18; // ieee80211 comes after this
             sprintf(szProgram,
-                    "ether[0x0a:4]==0x13223344 && ether[0x0e:2] == 0x55%.2x",
+                    "ether[0x0a:4]==0x02776966 && ether[0x0e:2] == 0x69%.2x",
                     port);
             break;
 
@@ -473,21 +474,43 @@ void process_payload(uint8_t *data, size_t data_len,
     tx_block(curr_buff, 0, prev_done_blocks);
 
 }
+
+static const struct radiotap_align_size align_size_000000_00[] = {
+	[0] = { .align = 1, .size = 4 }
+};
+
+static const struct ieee80211_radiotap_namespace vns_array[] = {
+	{
+		.align_size = align_size_000000_00,
+		.n_bits = sizeof(align_size_000000_00),
+		.oui = 0x000000,
+		.subns = 0
+	},
+};
+
+static const struct ieee80211_radiotap_vendor_namespaces vns = {
+	.ns = vns_array,
+	.n_ns = sizeof(vns_array)/sizeof(vns_array[0]),
+};
+
 //Low level packet processing before payload processing
 void process_packet(monitor_interface_t *interface, int adapter_no,
         block_buffer_t *block_buffer_list,
         struct pkt_buff_t * pbuff)
 {
-    struct pcap_pkthdr * ppcapPacketHeader = NULL;
-    struct ieee80211_radiotap_iterator rti;
-    PENUMBRA_RADIOTAP_DATA prd;
+
     u8 payloadBuffer[MAX_PACKET_LENGTH];
     u8 *pu8Payload = payloadBuffer;
     int bytes;
-    int n;
-    int retval;
-    unsigned int u16HeaderLen;
 
+	struct ieee80211_radiotap_iterator rti;
+	PENUMBRA_RADIOTAP_DATA prd;
+	int n;
+
+	int u16HeaderLen;
+#ifndef TEST_EN
+	int retval;
+	struct pcap_pkthdr * ppcapPacketHeader = NULL;
     // receive raw packet from PCAP handle to the interface
     retval = pcap_next_ex(interface->ppcap, &ppcapPacketHeader,
             (const u_char**) &pu8Payload);
@@ -506,19 +529,22 @@ void process_packet(monitor_interface_t *interface, int adapter_no,
 
     if (retval != 1)
         return;
+    bytes = ppcapPacketHeader->len;
+    u16HeaderLen = (pu8Payload[2] + (pu8Payload[3] << 8)) + interface->n80211HeaderLength;
+#else
+    bytes = read(STDIN_FILENO, pu8Payload, MAX_PACKET_LENGTH);
+    u16HeaderLen = (pu8Payload[2] + (pu8Payload[3] << 8)) + sizeof(struct ieee80211_hdr_3addr);
+#endif
     //packet basic sanity checks
-    u16HeaderLen = (pu8Payload[2] + (pu8Payload[3] << 8));
 
-    if (ppcapPacketHeader->len <= (u16HeaderLen + interface->n80211HeaderLength))
+
+    if (bytes <= u16HeaderLen)
         return;
 
-    bytes = ppcapPacketHeader->len - (u16HeaderLen
-            + interface->n80211HeaderLength);
     //reading Radio TAP data (low level WiFi data)
     if (ieee80211_radiotap_iterator_init(&rti,
                 (struct ieee80211_radiotap_header *) pu8Payload,
-                ppcapPacketHeader->len)
-        < 0)
+				bytes, &vns) < 0)
         return;
     //filling WiFi RF statistics
     while ((n = ieee80211_radiotap_iterator_next(&rti)) == 0) {
@@ -548,12 +574,12 @@ void process_packet(monitor_interface_t *interface, int adapter_no,
                 break;
         }
     }
+    bytes = bytes - u16HeaderLen;
     //moving payload pointer forward to the actual payload
-    pu8Payload += u16HeaderLen + interface->n80211HeaderLength;
+    pu8Payload += u16HeaderLen;
 
     if (prd.m_nRadiotapFlags & IEEE80211_RADIOTAP_F_FCS)
         bytes -= 4;
-
 // skip radiotap checksum check to free up some CPU (bad packets are not forwarded to userspace anyway)
 //        int checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0;
 //		if(!checksum_correct)
@@ -715,6 +741,7 @@ int main(int argc, char *argv[])
     }
     //initializing FEC decoder
     fec_init();
+#ifndef TEST_EN
     //opening all supplied interfaces
     int x = optind;
     while (x < argc && num_interfaces < MAX_PENUMBRA_INTERFACES) {
@@ -723,6 +750,7 @@ int main(int argc, char *argv[])
         ++num_interfaces;
         ++x;
     }
+#endif
     //allocating and initializing all Rx required buffers
     //block buffers contain both the block_num as well as packet buffers for a block.
     rx_data.blk_num = param_block_buffers;
@@ -743,8 +771,8 @@ int main(int argc, char *argv[])
     rx_data.pkt_buffer.tx_idx = 0;
     rx_data.pkt_buffer.pkt_num = MAX_PACKETS_PER_BLOCK * MAX_BLOCKS;
     //allocating actual continuous packets buffer for MAX_BLOCKS, it should accomodate any DATA/FEC packets numbers combinations
-    rx_data.pkt_buffer.packets = (struct pkt_buff_t::packets_t *) malloc(
-            sizeof(struct pkt_buff_t::packets_t) * rx_data.pkt_buffer.pkt_num);
+    rx_data.pkt_buffer.packets = (struct packets_t *) malloc(
+            sizeof(struct packets_t) * rx_data.pkt_buffer.pkt_num);
     on_exit(gc_rx_data, &rx_data);
     rx_status = status_memory_open();
     rx_status->wifi_adapter_cnt = num_interfaces;
@@ -786,17 +814,26 @@ int main(int argc, char *argv[])
     on_exit(gc_epoll, &epfd);
     //setting EPoll to react on arriving data
     struct epoll_event eearr[MAX_PENUMBRA_INTERFACES];
+#ifndef TEST_EN
     for (i = 0; i < num_interfaces; ++i) {
         eearr[i].events = EPOLLIN;
         eearr[i].data.u32 = i;
         if (epoll_ctl(epfd, EPOLL_CTL_ADD, interfaces[i].selectable_fd,
-                    &eearr[i])
-            == -1) {
-            perror("Failed to add FIFO fd to epoll, aborting\n");
+                    &eearr[i]) == -1) {
+            perror("Failed to add interface fd to epoll, aborting\n");
             return 1;
         }
 
     }
+#else
+    eearr[i].events = EPOLLIN;
+    eearr[i].data.u32 = 0;
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, STDIN_FILENO,
+				&eearr[i]) == -1) {
+		perror("Failed to add STDIN fd to epoll, aborting\n");
+		return 1;
+	}
+#endif
 #endif
     for (;;) {
 #ifdef SELECT_EN

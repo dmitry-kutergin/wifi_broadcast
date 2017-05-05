@@ -1,6 +1,6 @@
 ifeq ($(MAKECMDGOALS), armhf)
 
-CC:=arm-linux-gnueabihf-g++
+CC:=arm-linux-gnueabihf-gcc
 TOOLS_PATH?=/home/dkutergin/rpi_host/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian-x64/
 PATH+=:$(TOOLS_PATH)bin
 INCLUDE:=-I$(TOOLS_PATH)lib \
@@ -9,22 +9,24 @@ INCLUDE:=-I$(TOOLS_PATH)lib \
 LIBS:=-L$(TOOLS_PATH)arm-linux-gnueabihf/libc/lib/arm-linux-gnueabihf \
 -L./libpcap-dev/usr/lib/arm-linux-gnueabihf
 else
-CC=g++
+CC=gcc
 INCLUDE:= 
 LIBS:= 
 endif
-LDFLAGS=$(LIBS) -lrt -lpcap -pthread
-CPPFLAGS=-Wall -g $(INCLUDE) $(CUSTOM_FLAGS) -DTEST_EN
+LDFLAGS=$(LIBS) -lrt -lpcap -pthread -lm
+CPPFLAGS=-Wall -g $(INCLUDE) $(CUSTOM_FLAGS) -DTEST_EN -DHEX_DUMP
 
-all: rx tx rx_status rx_alive_test traffic_gen
-armhf: rx tx rx_status rx_alive_test traffic_gen
+APPS=rx tx rx_status rx_alive_test traffic_gen
+
+all: $(APPS)
+armhf: $(APPS)
 
 
 %.o: %.c
 	$(CC) -c -o $@ $< $(CPPFLAGS)
 
 
-rx: rx.o lib.o radiotap.o fec.o
+rx: rx.o lib.o radiotap/radiotap.o fec.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 tx: tx.o lib.o fec.o
@@ -35,9 +37,12 @@ rx_status: rx_status.o
 
 rx_alive_test: rx_alive_test.o
 	$(CC) -o $@ $^ $(LDFLAGS)
+	
+traffic_gen: traffic_gen.o
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 
 clean:
-	rm -f rx tx rx_status rx_alive_test traffic_gen *~ *.o
+	rm -f $(APPS) *~ *.o radiotap/*.o
 
 .PHOHY: all clean armhf

@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <linux/if_ether.h>
 
 #include "wifibroadcast.h"
 
@@ -90,6 +91,20 @@ void gc_timer(int status, void * arg);
 //shared memory garbage collector
 void gc_shm(int status, void * arg);
 
+//linux kernel ieee80211.h header fragment
+#define IEEE80211_FCTL_TODS 0x0100
+#define IEEE80211_FTYPE_DATA 0x0008
+#define IEEE80211_SCTL_SEQ 0xFFF0
+#define IEEE80211_SCTL_FRAG 0x000F
+
+struct ieee80211_hdr_3addr {
+	__le16 frame_control;
+	__le16 duration_id;
+	u8 addr1[ETH_ALEN];
+	u8 addr2[ETH_ALEN];
+	u8 addr3[ETH_ALEN];
+	__le16 seq_ctrl;
+} __attribute__((packed)) __attribute__((aligned (2)));
 
 
 

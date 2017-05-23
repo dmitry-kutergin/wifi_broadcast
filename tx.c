@@ -26,6 +26,7 @@
 #include <sched.h>
 #include <pthread.h>
 #include "radiotap/radiotap_iter.h"
+#include <argp.h>
 
 
 #include "fec.h"
@@ -149,40 +150,60 @@ typedef struct {
     unsigned char duplicated;
 } fifo_t;
 
-static int flagHelp = 0;
 static fifo_t fifo;
 
 static unsigned long int bytes_sent = 0;
 struct timespec last_time = {0};
 
+struct opts_t {
+	int port;
+	int fec_packets_per_block;
+	size_t packet_length;
+	int data_packets_per_block;
+	size_t min_packet_length;
+	int fifo_count;
+	int transmission_count;
+	uint64_t injection_rate;
+	int frame_rate;
+	int interleaved;
+	int duplicated;
+	char *wlan_list;
+};
 
-void usage(void)
-{
-    printf(
-            "tx (c)2015 befinitiv, 2017 dkutergin. Licensed under GPL2\n"
-                    "\n"
-                    "Usage: tx [options] <interface>\n"
-                    "\n"
-                    "Options:\n"
-                    "-b <count>  Number of data packets in a block (default 8). Needs to match with rx.\n"
-                    "-r <count>  Number of FEC packets per block (default 4). Needs to match with rx.\n"
-                    "-f <bytes>  Number of bytes per packet (default %d, max. %d). This is also the FEC block size. Needs to match with rx.\n"
-                    "-m <bytes>  Minimum number of bytes per frame (default: 0)\n"
-                    "-p <port>   Port number 0-255 (default 0)\n"
-                    "-s <stream> If <stream> is > 1 then the parameter changes \"tx\" input from stdin to named FIFOs. Each fifo transports\n"
-                    "            a stream over a different port (starting at -p port and incrementing). FIFO names are \"%s\". (default 1)\n"
-                    "-i <Mbps>   Mbits/s transmission rate\n"
+//Version
+const char *argp_program_version = "tx.1.0";
+// Program documentation.
+static char doc[] = "Raw data transmitter";
+// Supported opts
+static struct argp_option cmd_options[] =
+		{   { "port", 'p', "port",   0,
+			    "Port number 0-255 (default 0)" },
+			{   0, 	  'b', "count",  0,
+					"Number of data packets in a block (default 8). Needs to match with rx" },
+			{   0, 	  'r', "count",  0,
+					"Number of FEC packets per block (default 4). Needs to match with rx" },
+			{   0,    'f', "bytes",  0,
+					"Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with rx" },
+			{   0,    'm', "bytes",  0,
+					"Minimum number of bytes per frame (default 0)" },
+			{"stream",'s', "stream", 0,
+					"If <stream> is > 1 then the parameter changes \"tx\" input from stdin to named FIFOs. Each fifo transports a stream over a different port (starting at -p port and incrementing). FIFO names are \"%s\". (default 1)" },
+			{   0,    'x',  "value", 0,
+					"How often is a block transmitted (default 1)" },
+			{   0,    'i', "Mbps",   0,
+					"Mbits/s transmission rate" },
+			{   0,    'd',    0,     0,
+					"Enable packet duplication through multiple interfaces, otherwise load sharing is performed" },
+			{   0,    'a',  "fps",   0,
+					"Expected video FPS for optimal FEC/frame size calculation" },
 #ifdef INTERLEAVED
-            "-t          enable interleaver\n"
+			{   0,    't',    0,     0,
+					"Enable interleaver" },
 #endif
-            "-d          enable packet duplication through multiple interfaces, otherwise load sharing is performed\n"
-            "-a          expected video FPS for optimal FEC/frame size calculation\n"
-            "\n"
-            "Example:\n"
-            "  cat /dev/zero | tx -b 8 -r 4 -f 1024 wlan0 (reads zeros from stdin and sends them out on wlan0)\n"
-            "\n", 1024, MAX_USER_PACKET_LENGTH, FIFO_NAME);
-    exit(1);
-}
+			{   0,    'w', "list",   0,
+					"WLAN list. Separated by ;" },
+			{   0 } };
+
 
 #if 0
 //setting port number inside packet buffer
@@ -831,6 +852,108 @@ long gcd(long a, long b)
     else
         return gcd(b, a % b);
 }
+// Options parser
+static error_t parse_opt(int key, char *arg, struct argp_state *state) {
+	/* Get the input argument from argp_parse, which we
+	 know is a pointer to our opts structure. */
+	struct opts_t *opts = (struct opts_t *) state->input;
+
+
+	switch (key) {
+	case 'r': // retransmissions
+		opts->fec_packets_per_block = arg ? atoi(arg) : 1;
+		break;
+	case 'f': // MTU
+		opts->packet_length = arg ? atoi(arg) : MAX_USER_PACKET_LENGTH;
+		if (opts->packet_length > MAX_USER_PACKET_LENGTH) {
+			printf(
+					"Packet length is limited to %d bytes (you requested %d bytes)\n",
+					MAX_USER_PACKET_LENGTH, (int)opts->packet_length);
+			argp_usage (state);
+		}
+		break;
+	case 'p': //port
+		opts->port = arg ? atoi(arg) : 0;
+		break;
+	case 'b': //retransmission block size
+		opts->data_packets_per_block = arg ? atoi(arg) : 1;
+		break;
+	case 'm': //minimum packet length
+		opts->min_packet_length = arg ? atoi(arg) : 0;
+		break;
+	case 's': //how many streams (fifos) do we have in parallel
+		opts->fifo_count = arg ? atoi(arg) : 1;
+		break;
+	case 'x': //how often is a block transmitted
+		opts->transmission_count = arg ? atoi(arg) : 1;
+		break;
+	case 'i': //injection rate
+		opts->injection_rate = arg ? atoi(arg) : 24;
+		break;
+	case 'a': //frame rate
+		opts->frame_rate = arg ? atoi(arg) : 80;
+		break;
+#ifdef INTERLEAVED
+	case 't': //interleaved transmission
+		opts->interleaved = 1;
+		break;
+#endif
+	case 'd': //duplicated transmission
+		opts->duplicated = 1;
+		break;
+	case 'w': //wlan list
+		opts->wlan_list = arg;
+		break;
+	case ARGP_KEY_END:
+#ifndef TEST_EN
+		if(!opts->wlan_list){
+			argp_usage (state);
+			break;
+		}
+#endif
+		if (opts->min_packet_length > opts->packet_length) {
+			fprintf(stderr,
+					"Your minimum packet length is higher that your maximum packet length (%d > %d)\n",
+					(int)opts->min_packet_length, (int)opts->packet_length);
+			opts->min_packet_length = opts->packet_length;
+			argp_usage (state);
+			break;
+		}
+	    if (opts->fifo_count > MAX_FIFOS) {
+	        fprintf(stderr,
+	                "The maximum number of streams (FIFOS) is %d (you requested %d)\n",
+	                MAX_FIFOS, opts->fifo_count);
+	        argp_usage (state);
+	        break;
+	    }
+
+	    if (opts->data_packets_per_block > MAX_DATA_OR_FEC_PACKETS_PER_BLOCK || opts->fec_packets_per_block
+	            > MAX_DATA_OR_FEC_PACKETS_PER_BLOCK) {
+	        fprintf(stderr,
+	                "Data and FEC packets per block are limited to %d (you requested %d data, %d FEC)\n",
+	                MAX_DATA_OR_FEC_PACKETS_PER_BLOCK, opts->data_packets_per_block,
+					opts->fec_packets_per_block);
+	        argp_usage (state);
+	        break;
+	    }
+
+	    if ((opts->frame_rate < 15) && (opts->frame_rate > 200)) {
+	        fprintf(stderr,
+	                "Frame rate supplied %d is outside limits: [15, 200] \n",
+					opts->frame_rate);
+	        argp_usage (state);
+	        break;
+	    }
+		break;
+	default:
+		return ARGP_ERR_UNKNOWN;
+	}
+
+	return 0;
+}
+
+static struct argp argp = { cmd_options, parse_opt, NULL, doc };
+
 //main function
 int main(int argc, char *argv[])
 {
@@ -846,137 +969,24 @@ int main(int argc, char *argv[])
     fd_set fifo_set;
     int max_fifo_fd = -1;
 #endif
-    //default parameters FECs=1 DATA=1 param_packet_length=MAX_USER_PACKET_LENGTH param_injection_rate=24 param_frame_rate=80 param_port=0
-    int param_transmission_count = 1;
-    int param_data_packets_per_block = 1;
-    int param_fec_packets_per_block = 1;
-    size_t param_packet_length = MAX_USER_PACKET_LENGTH;
-    int param_port = 0;
-    size_t param_min_packet_length = 0;
-    int param_fifo_count = 1;
-    uint64_t param_injection_rate = 24;
-    int param_frame_rate = 80;
-#ifdef INTERLEAVED
-    unsigned char param_interleaved = 0;
-#endif
-    unsigned char param_duplicated = 0;
+
+    //Replace value of default bytes per packet in Supported opts
+	char temp_buf_f[200];
+	sprintf(temp_buf_f, cmd_options[3].doc, MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
+	cmd_options[3].doc = temp_buf_f;
+	char temp_buf_s[400];
+	sprintf(temp_buf_s, cmd_options[5].doc, FIFO_NAME);
+	cmd_options[5].doc = temp_buf_s;
+	argp.options = cmd_options;
 
     printf("Raw data transmitter (c) 2015 befinitiv  GPL2\n");
+
+    //default parameters FECs=1 DATA=1 param_packet_length=MAX_USER_PACKET_LENGTH param_injection_rate=24 param_frame_rate=80 param_port=0
+    struct opts_t run_opts = { 0 , 4, MAX_USER_PACKET_LENGTH, 8, 0, 1, 1, 24, 80, 0, 0, 0};
     //processing command line arguments
-    while (1) {
-        int nOptionIndex;
-        static const struct option optiona[] = { { "help", no_argument,
-                &flagHelp, 1 }, { 0, 0, 0, 0 } };
-#ifdef INTERLEAVED
-        int c = getopt_long(argc, argv, "hp:m:s:x:i:tda:f:b:r:", optiona,
-                &nOptionIndex);
-#else
-        int c = getopt_long(argc, argv, "hp:i:a:m:s:x:df:b:r:", optiona,
-                &nOptionIndex);
-#endif
+    argp_parse(&argp, argc, argv, 0, 0, &run_opts);
 
-        if (c == -1)
-            break;
-        switch (c) {
-            case 0: // long option
-                break;
 
-            case 'h': // help
-                usage();
-
-            case 'r': // retransmissions
-                param_fec_packets_per_block = atoi(optarg);
-                break;
-
-            case 'f': // MTU
-                param_packet_length = atoi(optarg);
-                break;
-
-            case 'p': //port
-                param_port = atoi(optarg);
-                break;
-
-            case 'b': //retransmission block size
-                param_data_packets_per_block = atoi(optarg);
-                break;
-
-            case 'm': //minimum packet length
-                param_min_packet_length = atoi(optarg);
-                break;
-
-            case 's': //how many streams (fifos) do we have in parallel
-                param_fifo_count = atoi(optarg);
-                break;
-
-            case 'x': //how often is a block transmitted
-                param_transmission_count = atoi(optarg);
-                break;
-
-            case 'i': //injection rate
-                param_injection_rate = atoi(optarg);
-                break;
-
-            case 'a': //frame rate
-                param_frame_rate = atoi(optarg);
-                break;
-#ifdef INTERLEAVED
-                case 't': //interleaved transmission
-                param_interleaved = 1;
-                break;
-#endif
-            case 'd': //duplicated transmission
-                param_duplicated = 1;
-                break;
-            default:
-                fprintf(stderr, "unknown switch %c\n", c);
-                usage();
-                break;
-        }
-    }
-#ifndef TEST_EN
-    //if no WLAN interfaces specified show usage
-    if (optind >= argc) {
-        printf("optind %d>= argc%d\n", optind, argc);
-        usage();
-    }
-#endif
-    //parameters sanity checks
-    if (param_packet_length > MAX_USER_PACKET_LENGTH) {
-        fprintf(stderr,
-                "Packet length is limited to %d bytes (you requested %d bytes)\n",
-                MAX_USER_PACKET_LENGTH, (int)param_packet_length);
-        return (1);
-    }
-
-    if (param_min_packet_length > param_packet_length) {
-        fprintf(stderr,
-                "Your minimum packet length is higher that your maximum packet length (%d > %d)\n",
-                (int)param_min_packet_length, (int)param_packet_length);
-        param_min_packet_length = param_packet_length;
-    }
-
-    if (param_fifo_count > MAX_FIFOS) {
-        fprintf(stderr,
-                "The maximum number of streams (FIFOS) is %d (you requested %d)\n",
-                MAX_FIFOS, param_fifo_count);
-        return (1);
-    }
-
-    if (param_data_packets_per_block > MAX_DATA_OR_FEC_PACKETS_PER_BLOCK || param_fec_packets_per_block
-            > MAX_DATA_OR_FEC_PACKETS_PER_BLOCK) {
-        fprintf(stderr,
-                "Data and FEC packets per block are limited to %d (you requested %d data, %d FEC)\n",
-                MAX_DATA_OR_FEC_PACKETS_PER_BLOCK, param_data_packets_per_block,
-                param_fec_packets_per_block);
-        return (1);
-    }
-
-    if ((param_frame_rate < 15) && (param_frame_rate > 200)) {
-        fprintf(stderr,
-                "Frame rate supplied %d is outside limits: [15, 200] \n",
-                param_frame_rate);
-        return (1);
-    }
 
     timer_t tp_timer;
     //creating statistics timer
@@ -1003,27 +1013,29 @@ int main(int argc, char *argv[])
     fifo_create_select_set(fifo, param_fifo_count, &fifo_set, &max_fifo_fd);
 #endif
     //initialized main FIFO structure with supplied parameters
-    fifo_init(&fifo, param_fifo_count, param_data_packets_per_block,
-            param_fec_packets_per_block, param_port, param_packet_length, param_injection_rate);
+    fifo_init(&fifo, run_opts.fifo_count, run_opts.data_packets_per_block,
+    		run_opts.fec_packets_per_block, run_opts.port, run_opts.packet_length, run_opts.injection_rate);
     //garbage collector push
     on_exit(gc_fifo, &fifo);
     //maximum injection rate
-	param_injection_rate = param_injection_rate * 10e6 / 8;
+    run_opts.injection_rate = run_opts.injection_rate * 10e6 / 8;
 
-	if (param_injection_rate > INJ_RATE_MAX)
-		param_injection_rate = INJ_RATE_MAX;
+	if (run_opts.injection_rate > INJ_RATE_MAX)
+		run_opts.injection_rate = INJ_RATE_MAX;
 #ifndef TEST_EN
-    char szErrbuf[PCAP_ERRBUF_SIZE];
+	char szErrbuf[PCAP_ERRBUF_SIZE];
     pcap_t *ppcap = NULL;
-    // open the WLAN interfaces through PCAP
-    for (; optind < argc; optind++) {
 
+    char separator[2] = ”;”;
+    char *arg_value = strtok (run_opts.wlan_list, separator);
+    // open the WLAN interfaces through PCAP
+    while (arg_value != NULL) {
         szErrbuf[0] = '\0';
-        ppcap = pcap_open_live(argv[optind], param_packet_length, 0, 20,
+        ppcap = pcap_open_live(arg_value, run_opts.packet_length, 0, 20,
                 szErrbuf);
         if (ppcap == NULL) {
             fprintf(stderr, "Unable to open interface %s in pcap: %s\n",
-                    argv[optind], szErrbuf);
+            		arg_value, szErrbuf);
             return (1);
         }
         //non-blocking operation
@@ -1031,22 +1043,30 @@ int main(int argc, char *argv[])
         fifo.ppcap_arr = (pcap_t **) realloc(fifo.ppcap_arr,
                 sizeof(pcap_t *) * ++fifo.num_pcap);
         fifo.ppcap_arr[fifo.num_pcap - 1] = ppcap;
+        arg_value = strtok (NULL, separator);
     }
 #else
-    fifo.num_pcap = argc - optind;
+    char separator[2] = ";";
+	char *arg_value = strtok (run_opts.wlan_list, separator);
+	int wlan_list_count =0;
+	while (arg_value != NULL) {
+		wlan_list_count++;
+		arg_value = strtok (NULL, separator);
+	}
+    fifo.num_pcap = wlan_list_count;
 #endif
     //initialize forward error correction
     fec_init();
 
     //tx retransmission set up
-    fifo.transmission_count = param_transmission_count;
+    fifo.transmission_count = run_opts.transmission_count;
 #ifdef INTERLEAVED
-    fifo.interleaved = param_interleaved;
+    fifo.interleaved = run_opts.interleaved;
 #endif
     //set duplicated/load shared operation with transmission multipathing
-    fifo.duplicated = param_duplicated;
+    fifo.duplicated = run_opts.duplicated;
     //open FIFOs
-    fifo_open(&fifo, param_fifo_count);
+    fifo_open(&fifo, run_opts.fifo_count);
 #ifndef SELECT_EN
     //creating EPoll handle
     int epfd = epoll_create(1);
@@ -1058,7 +1078,7 @@ int main(int argc, char *argv[])
     on_exit(gc_epoll, &epfd);
     //setting EPoll to react on arriving data
     struct epoll_event eearr[8];
-    for (i = 0; i < param_fifo_count; ++i) {
+    for (i = 0; i < run_opts.fifo_count; ++i) {
         eearr[i].events = EPOLLIN;
         eearr[i].data.u32 = i;
         if (epoll_ctl(epfd, EPOLL_CTL_ADD, fifo.fifo_array[i].fd, &eearr[i]) == -1) {
@@ -1123,7 +1143,7 @@ int main(int argc, char *argv[])
             return (1);
         }
         //cycle through all fifos and look for new data
-        for(i=0; i<param_fifo_count && ret; ++i) {
+        for(i=0; i<run_opts.fifo_count && ret; ++i) {
             if(!FD_ISSET(fifo[i].fd, &rdfs)) {
                 continue;
             }
@@ -1178,8 +1198,8 @@ int main(int argc, char *argv[])
             //read the data
             struct pkt_struct_t * ps = (struct pkt_struct_t *) pb->data;
             int inl = read(fifo.fifo_array[i].fd, ps->payload + pb->len,
-                    param_packet_length - pb->len);
-            if ((inl < 0) || (inl > (int)(param_packet_length - pb->len))) {
+            		run_opts.packet_length - pb->len);
+            if ((inl < 0) || (inl > (int)(run_opts.packet_length - pb->len))) {
                 perror("reading stdin");
                 return 1;
             }
@@ -1196,7 +1216,7 @@ int main(int argc, char *argv[])
             pb->len += inl;
 
             //check if we read enough data to move tothe next packet
-            if (pb->len >= param_min_packet_length) {
+            if (pb->len >= run_opts.min_packet_length) {
 //                payload_header_t *ph = (payload_header_t*)pb->data;
 //                ph->data_length = pb->len - sizeof(payload_header_t); //write the length into the packet. this is needed since with fec we cannot use the wifi packet lentgh anymore. We could also set the user payload to a fixed size but this would introduce additional latency since tx would need to wait until that amount of data has been received
                 //RX statistics counter
@@ -1251,20 +1271,20 @@ int main(int argc, char *argv[])
                     fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length =
                             MAX_USER_PACKET_LENGTH;
                     //checking if we can go with FEC=DATA=1
-                    if (param_injection_rate * fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length >=
+                    if (run_opts.injection_rate * fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length >=
                     		(curr_byte_rate * (PACKET_OVERHEAD + fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length)
                             * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio / fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio + 1))) {
                         //if so calculate actual packet payload length
                         fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length =
                                 (PACKET_OVERHEAD * curr_byte_rate
                                  * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio / fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio + 1))
-                                / (param_injection_rate - curr_byte_rate
+                                / (run_opts.injection_rate - curr_byte_rate
                                         * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio / fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio + 1));
 
 //                        fprintf(stderr, "FEC=DATA=1: ovh %ld, packet_payload_length %d, param_injection_rate %ld, curr_byte_rate %d, fec %d, data %d\n",PACKET_OVERHEAD,
 //                        		fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length, param_injection_rate, curr_byte_rate,
 //								fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio, fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio);
-                    } else if (param_injection_rate < curr_byte_rate) {
+                    } else if (run_opts.injection_rate < curr_byte_rate) {
                     	fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio = 1;
                     	fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio = MAX_PACKETS_PER_BLOCK - fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio;
                     	fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length =
@@ -1272,7 +1292,7 @@ int main(int argc, char *argv[])
                     } else {
                         //if not trying to get rough FEC and DATA ratios values
                         uint64_t fec_part_ratio =
-                                (param_injection_rate * (uint64_t)fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length - (uint64_t)curr_byte_rate
+                                (run_opts.injection_rate * (uint64_t)fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length - (uint64_t)curr_byte_rate
                                         * ((uint64_t)fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length + PACKET_OVERHEAD));
                         uint64_t data_part_ratio =
                         		(uint64_t)curr_byte_rate * ((uint64_t)fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length
@@ -1285,7 +1305,7 @@ int main(int argc, char *argv[])
                         uint64_t scale =
                                 data_part_ratio + fec_part_ratio;
                         uint64_t max_packets_per_frame =
-                                curr_byte_rate / (param_frame_rate
+                                curr_byte_rate / (run_opts.frame_rate
                                         * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length + PACKET_OVERHEAD));
                         if ((MAX_PACKETS_PER_BLOCK < max_packets_per_frame) /*||
                         		((param_injection_rate * fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio) <
@@ -1305,7 +1325,7 @@ int main(int argc, char *argv[])
                         	packet_payload_length =
                                 (int64_t)(PACKET_OVERHEAD * curr_byte_rate *
                                 		(fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio + fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio)) /
-								(int64_t)(param_injection_rate * fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio - curr_byte_rate *
+								(int64_t)(run_opts.injection_rate * fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio - curr_byte_rate *
                                 		(fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio + fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio));
                         	if((packet_payload_length <= MAX_USER_PACKET_LENGTH) && (packet_payload_length > 0)){
                         		break;
@@ -1342,8 +1362,8 @@ int main(int argc, char *argv[])
 //							(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length * fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio),
 //							param_injection_rate);
 //                    printf("Final packet_payload_length %d\n", fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length);
-                    param_packet_length = fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length;
-                    param_min_packet_length = param_packet_length;
+                    run_opts.packet_length = fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length;
+                    run_opts.min_packet_length = run_opts.packet_length;
                     bytes_received = 0;
                 } else {
 //                	printf("not enough packets\n");

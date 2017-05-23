@@ -66,7 +66,7 @@ typedef struct {
 
 #define MAX_PACKET_LENGTH 4192
 //maximum length of transmission data payload
-#define MAX_USER_PACKET_LENGTH 1450
+#define MAX_USER_PACKET_LENGTH       1450
 //maximum number of packets per block when set from command line
 #define MAX_DATA_OR_FEC_PACKETS_PER_BLOCK 32
 //absolute maximum allocated packets per block FEC+data

@@ -45,17 +45,29 @@ typedef struct {
     int n80211HeaderLength;
 } monitor_interface_t;
 
+
+struct payload_t{
+	uint16_t len;
+	uint8_t dataBuff[MAX_USER_PACKET_LENGTH];
+}__attribute__((packed));
+
 //Rx packet structure
 struct pkt_struct_rx_t {
     wifi_packet_header_t wifi_hdr;
     payload_header_t payload_hdr;
-    uint8_t payload[MAX_USER_PACKET_LENGTH];
+    union {
+    	struct payload_t sPayload;
+		uint8_t bPayload[sizeof(struct payload_t)];
+	} payload;
 }__attribute__((packed));
 #define MAX_BLOCKS 8
 //Packet buffer structure
 struct packets_t {
 	uint16_t read_pkt_len;
-	struct pkt_struct_rx_t data;
+	union {
+		struct pkt_struct_rx_t sData;
+		uint8_t bData[sizeof(struct pkt_struct_rx_t)];
+	} packet_data;
 }__attribute__((packed)) * packets;
 struct pkt_buff_t {
     volatile uint16_t rx_idx;
@@ -213,12 +225,15 @@ void block_buffer_list_reset(block_buffer_t *block_buffer_list,
         rb++;
     }
 }
-
+#define GET_PKT_DATA(CURR_BUFF, INDEX) (((struct payload_t *)CURR_BUFF->packet_buffer_list[INDEX].data)->dataBuff)
+#define GET_PKT_LEN(CURR_BUFF, INDEX) (((struct payload_t *)CURR_BUFF->packet_buffer_list[INDEX].data)->len)
 //TX received and reconstructed data to standard output
 void tx_block(block_buffer_t * curr_buff, uint8_t force, int * done_blocks)
 {
     uint8_t i;
+    uint8_t recovery_data[MAX_PACKETS_PER_BLOCK][sizeof(struct payload_t)];
     //if we have enough data + FEC packets output to stdout
+    fprintf(stderr, "Received fecs: %d, data: %d, should be: %d\n", curr_buff->fec_pkts_cnt, curr_buff->data_pkts_cnt, curr_buff->payload_hdr.num_data_blocks);
     if ((curr_buff->fec_pkts_cnt + curr_buff->data_pkts_cnt) >= curr_buff->payload_hdr.num_data_blocks) {
         //updating already processed block counter
         rx_status->received_block_cnt++;
@@ -229,8 +244,8 @@ void tx_block(block_buffer_t * curr_buff, uint8_t force, int * done_blocks)
                 //transmit if only were not already transmitted
                 if (!curr_buff->packet_buffer_list[i].tx_done) {
                     //out packet
-                    write(STDOUT_FILENO, curr_buff->packet_buffer_list[i].data,
-                            curr_buff->packet_buffer_list[i].len);
+                    write(STDOUT_FILENO, GET_PKT_DATA(curr_buff, i),
+                    		GET_PKT_LEN(curr_buff, i));
                 }
                 //Resetting packet buffer flags
                 curr_buff->packet_buffer_list[i].tx_done = 0;
@@ -253,40 +268,39 @@ void tx_block(block_buffer_t * curr_buff, uint8_t force, int * done_blocks)
             uint8_t j = 0;
             //collecting all missing data packets indexes
             for (i = 0; i < curr_buff->payload_hdr.num_data_blocks; ++i) {
-                data_blocks[i] = curr_buff->packet_buffer_list[i].data;
+
+                fprintf(stderr, "Data block: %d=%p\n", i, curr_buff->packet_buffer_list[i].data);
                 if (!curr_buff->packet_buffer_list[i].valid) {
                     erased_block_nos[j++] = i;
+                    fprintf(stderr, "Missed data pkt num: %d\n", i);
+                    data_blocks[i] = recovery_data[i];
+                } else {
+                	data_blocks[i] = curr_buff->packet_buffer_list[i].data;
                 }
-                //Resetting packet buffer flags in a side-car
-                curr_buff->packet_buffer_list[i].tx_done = 0;
-                curr_buff->packet_buffer_list[i].valid = 0;
-                curr_buff->packet_buffer_list[i].crc_correct = 0;
             }
             uint8_t nr_fec_blocks = j;
             j = 0;
+            fprintf(stderr, "Need FEC pkts: %d\n", nr_fec_blocks);
             //collecting all valid FEC packets
             for (i = curr_buff->payload_hdr.num_data_blocks;
                     i < (curr_buff->payload_hdr.num_data_blocks + curr_buff->payload_hdr.num_fecs_blocks);
                     ++i) {
-                if (++j == nr_fec_blocks)
-                    break;
-                if (!curr_buff->packet_buffer_list[i].valid) {
+            	hexdump(GET_PKT_DATA(curr_buff, i),
+                		GET_PKT_LEN(curr_buff, i));
+                if (curr_buff->packet_buffer_list[i].valid) {
+                	fprintf(stderr, "Using FEC pkt num: %d\n", i);
                     fec_block_nos[j] = i;
-                    fec_blocks[j] = curr_buff->packet_buffer_list[i].data;
+                    fec_blocks[j++] = curr_buff->packet_buffer_list[i].data;
                 }
-                //Resetting packet buffer flags in a side-car
-                curr_buff->packet_buffer_list[i].tx_done = 0;
-                curr_buff->packet_buffer_list[i].valid = 0;
-                curr_buff->packet_buffer_list[i].crc_correct = 0;
+                if (j == nr_fec_blocks)
+					break;
             }
-            //Resetting packet buffer flags
-            for (; i < MAX_PACKETS_PER_BLOCK; ++i) {
-                curr_buff->packet_buffer_list[i].tx_done = 0;
-                curr_buff->packet_buffer_list[i].valid = 0;
-                curr_buff->packet_buffer_list[i].crc_correct = 0;
-            }
+
+
             //since we got all valid, missed data packets as well as valid FEC frames
             //decode data
+            fprintf(stderr, "nominal_packet_length: %d, num_data_blocks: %d, nr_fec_blocks: %d\n",
+            		curr_buff->payload_hdr.nominal_packet_length, curr_buff->payload_hdr.num_data_blocks, nr_fec_blocks);
             fec_decode(
                     (unsigned int) curr_buff->payload_hdr.nominal_packet_length,
                     data_blocks, curr_buff->payload_hdr.num_data_blocks,
@@ -294,12 +308,25 @@ void tx_block(block_buffer_t * curr_buff, uint8_t force, int * done_blocks)
             //and write it to STDOUT
             for (i = curr_buff->curr_pkt_num;
                     i < curr_buff->payload_hdr.num_data_blocks; ++i) {
-                if (!curr_buff->packet_buffer_list[i].tx_done) {
+                if ((curr_buff->packet_buffer_list[i].valid && !curr_buff->packet_buffer_list[i].tx_done) ||
+                		!curr_buff->packet_buffer_list[i].valid){
                     //output packet
-                    write(STDOUT_FILENO, curr_buff->packet_buffer_list[i].data,
-                            curr_buff->packet_buffer_list[i].len);
+//                    write(STDOUT_FILENO, ((struct payload_t *)data_blocks[i])->dataBuff,
+//                    		((struct payload_t *)data_blocks[i])->len);
+                	fprintf(stderr, "Dumping packet %d, len %d\n", i, ((struct payload_t *)data_blocks[i])->len);
+                    hexdump(((struct payload_t *)data_blocks[i])->dataBuff,
+                    		10);
 
                 }
+                curr_buff->packet_buffer_list[i].tx_done = 0;
+				curr_buff->packet_buffer_list[i].valid = 0;
+				curr_buff->packet_buffer_list[i].crc_correct = 0;
+            }
+            //Resetting packet buffer flags
+            for (; i < MAX_PACKETS_PER_BLOCK; ++i) {
+                curr_buff->packet_buffer_list[i].tx_done = 0;
+                curr_buff->packet_buffer_list[i].valid = 0;
+                curr_buff->packet_buffer_list[i].crc_correct = 0;
             }
         }
         //saving a back-log of already processed blocks
@@ -325,8 +352,8 @@ void tx_block(block_buffer_t * curr_buff, uint8_t force, int * done_blocks)
 #endif
             ) {
                 //out packet
-                write(STDOUT_FILENO, curr_buff->packet_buffer_list[i].data,
-                        curr_buff->packet_buffer_list[i].len);
+                write(STDOUT_FILENO, GET_PKT_DATA(curr_buff, i),
+                		GET_PKT_LEN(curr_buff, i));
 
             }
         }
@@ -354,8 +381,7 @@ void tx_block(block_buffer_t * curr_buff, uint8_t force, int * done_blocks)
 
 }
 //process packet payload
-void process_payload(uint8_t *data, size_t data_len,
-        block_buffer_t *block_buffer_list)
+void process_payload(struct pkt_struct_rx_t *packet_data, block_buffer_t *block_buffer_list)
 {
     wifi_packet_header_t *wph;
     payload_header_t * plh;
@@ -366,12 +392,9 @@ void process_payload(uint8_t *data, size_t data_len,
     static int prev_done_blocks[2] = {-1, -1};
 
     //maping packet headers structures
-    wph = (wifi_packet_header_t*) data;
-    data += sizeof(wifi_packet_header_t);
-    data_len -= sizeof(wifi_packet_header_t);
-    plh = (payload_header_t *) data;
-    data += sizeof(payload_header_t);
-    data_len -= sizeof(payload_header_t);
+    wph = &packet_data->wifi_hdr;
+    plh = &packet_data->payload_hdr;
+
 
 //  block_num = wph->packet_number
 //      / (param_data_packets_per_block + param_fec_packets_per_block); //if aram_data_packets_per_block+param_fec_packets_per_block would be limited to powers of two, this could be replaced by a logical AND operation
@@ -384,6 +407,8 @@ void process_payload(uint8_t *data, size_t data_len,
 
     //if packet came from already transmitted block skip it, we save last 2 block numbers
     //anything else should be treated as transmission reset
+
+    printf("blk# %d, pkt# %d, is fec: %d\n", block_num, packet_num, wph->fec_taint);
     if(block_num == prev_done_blocks[0] || block_num == prev_done_blocks[1])
         return;
     //searching for the block for received packet
@@ -440,7 +465,6 @@ void process_payload(uint8_t *data, size_t data_len,
     }
     //updating currently processing block parameters
     curr_buff->block_num = block_num;
-    //curr_buff->payload_hdr.data_length = plh->data_length;
     curr_buff->payload_hdr.nominal_packet_length = plh->nominal_packet_length;
     curr_buff->payload_hdr.num_data_blocks = plh->num_data_blocks;
     curr_buff->payload_hdr.num_fecs_blocks = plh->num_fecs_blocks;
@@ -450,10 +474,10 @@ void process_payload(uint8_t *data, size_t data_len,
     else
         curr_buff->data_pkts_cnt++;
     //setting packet buffer data pointer to the newly received data
-    curr_buff->packet_buffer_list[packet_num].data = data;
+    curr_buff->packet_buffer_list[packet_num].data = packet_data->payload.bPayload;
     //updating current packet buffer element flags
     curr_buff->packet_buffer_list[packet_num].valid = 1;
-    curr_buff->packet_buffer_list[packet_num].len = plh->actual_length;
+    curr_buff->packet_buffer_list[packet_num].len = packet_data->payload.sPayload.len;
     curr_buff->packet_buffer_list[packet_num].tx_done = 0;
     curr_buff->packet_buffer_list[packet_num].crc_correct =
             (wph->fec_taint) ? 1 : 2;
@@ -464,8 +488,8 @@ void process_payload(uint8_t *data, size_t data_len,
         if ((block_buffer_list[other_buff_idx].block_num == -1) || (block_buffer_list[other_buff_idx].block_num
                 > curr_buff->block_num)) {
             //out packet
-            write(STDOUT_FILENO, curr_buff->packet_buffer_list[packet_num].data,
-                    curr_buff->packet_buffer_list[packet_num].len);
+            write(STDOUT_FILENO, GET_PKT_DATA(curr_buff, packet_num),
+            		GET_PKT_LEN(curr_buff, packet_num));
             curr_buff->packet_buffer_list[packet_num].tx_done = 1;
             curr_buff->curr_pkt_num++;
         }
@@ -530,78 +554,95 @@ void process_packet(monitor_interface_t *interface, int adapter_no,
     if (retval != 1)
         return;
     bytes = ppcapPacketHeader->len;
-    u16HeaderLen = (pu8Payload[2] + (pu8Payload[3] << 8)) + interface->n80211HeaderLength;
+    do {
+    	u16HeaderLen = (pu8Payload[2] + (pu8Payload[3] << 8)) + interface->n80211HeaderLength;
 #else
     bytes = read(STDIN_FILENO, pu8Payload, MAX_PACKET_LENGTH);
-    u16HeaderLen = (pu8Payload[2] + (pu8Payload[3] << 8)) + sizeof(struct ieee80211_hdr_3addr);
+    do {
+    	u16HeaderLen = (pu8Payload[2] + (pu8Payload[3] << 8)) + sizeof(struct ieee80211_hdr_3addr);
+//    	printf("Read %d bytes, header length %d\n", bytes, u16HeaderLen);
 #endif
-    //packet basic sanity checks
+//    	hexdump(pu8Payload, u16HeaderLen);
+    	//packet basic sanity checks
 
 
-    if (bytes <= u16HeaderLen)
-        return;
+		if (bytes <= u16HeaderLen)
+			return;
 
-    //reading Radio TAP data (low level WiFi data)
-    if (ieee80211_radiotap_iterator_init(&rti,
-                (struct ieee80211_radiotap_header *) pu8Payload,
-				bytes, &vns) < 0)
-        return;
-    //filling WiFi RF statistics
-    while ((n = ieee80211_radiotap_iterator_next(&rti)) == 0) {
+		//reading Radio TAP data (low level WiFi data)
+		if (ieee80211_radiotap_iterator_init(&rti,
+					(struct ieee80211_radiotap_header *) pu8Payload,
+					bytes, &vns) < 0)
+			return;
+		//filling WiFi RF statistics
+		while ((n = ieee80211_radiotap_iterator_next(&rti)) == 0) {
 
-        switch (rti.this_arg_index) {
-            case IEEE80211_RADIOTAP_RATE:
-                prd.m_nRate = (*rti.this_arg);
-                break;
+			switch (rti.this_arg_index) {
+				case IEEE80211_RADIOTAP_RATE:
+					prd.m_nRate = (*rti.this_arg);
+					break;
 
-            case IEEE80211_RADIOTAP_CHANNEL:
-                prd.m_nChannel = le16_to_cpu(*((u16 * )rti.this_arg));
-                prd.m_nChannelFlags = le16_to_cpu(
-                        *((u16 * )(rti.this_arg + 2)));
-                break;
+				case IEEE80211_RADIOTAP_CHANNEL:
+					prd.m_nChannel = le16_to_cpu(*((u16 * )rti.this_arg));
+					prd.m_nChannelFlags = le16_to_cpu(
+							*((u16 * )(rti.this_arg + 2)));
+					break;
 
-            case IEEE80211_RADIOTAP_ANTENNA:
-                prd.m_nAntenna = (*rti.this_arg) + 1;
-                break;
+				case IEEE80211_RADIOTAP_ANTENNA:
+					prd.m_nAntenna = (*rti.this_arg) + 1;
+					break;
 
-            case IEEE80211_RADIOTAP_FLAGS:
-                prd.m_nRadiotapFlags = *rti.this_arg;
-                break;
+				case IEEE80211_RADIOTAP_FLAGS:
+					prd.m_nRadiotapFlags = *rti.this_arg;
+					break;
 
-            case IEEE80211_RADIOTAP_DBM_ANTSIGNAL:
-                rx_status->adapter[adapter_no].current_signal_dbm =
-                        (int8_t) (*rti.this_arg);
-                break;
-        }
-    }
-    bytes = bytes - u16HeaderLen;
-    //moving payload pointer forward to the actual payload
-    pu8Payload += u16HeaderLen;
+				case IEEE80211_RADIOTAP_DBM_ANTSIGNAL:
+					rx_status->adapter[adapter_no].current_signal_dbm =
+							(int8_t) (*rti.this_arg);
+					break;
+			}
+		}
+		bytes = bytes - u16HeaderLen;
+		//moving payload pointer forward to the actual payload
+		pu8Payload += u16HeaderLen;
 
-    if (prd.m_nRadiotapFlags & IEEE80211_RADIOTAP_F_FCS)
-        bytes -= 4;
-// skip radiotap checksum check to free up some CPU (bad packets are not forwarded to userspace anyway)
-//        int checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0;
-//		if(!checksum_correct)
-//			rx_status->adapter[adapter_no].wrong_crc_cnt++;
-    //low-level packet counter
-    rx_status->adapter[adapter_no].received_packet_cnt++;
+		payload_header_t * plh;
 
-//		if(rx_status->adapter[adapter_no].received_packet_cnt % 1024 == 0) {
-//			fprintf(stderr, "Signal (card %d): %ddBm\n", adapter_no, rx_status->adapter[adapter_no].current_signal_dbm);
-//		}
+		plh = (payload_header_t *) (pu8Payload + sizeof(wifi_packet_header_t));
 
-    rx_status->last_update = time(NULL);
-    //waiting on circular packet buffer to become free
-    uint16_t chk_idx = (pbuff->rx_idx + 1) % (pbuff->pkt_num);
-    while (chk_idx == pbuff->tx_idx) {
-        sched_yield();
-    }
-    //filling packet buffer data length
-    pbuff->packets[pbuff->rx_idx].read_pkt_len = bytes;
-    //since payload buffer provided by PCAP is not saved between PCAP reads, we need to copy it to the packet circular buffer
-    memmove(&pbuff->packets[pbuff->rx_idx].data, pu8Payload, bytes);
-    pbuff->rx_idx = chk_idx;
+		int pkt_bytes = sizeof(wifi_packet_header_t) + sizeof(payload_header_t) + plh->nominal_packet_length;
+
+
+	// skip radiotap checksum check to free up some CPU (bad packets are not forwarded to userspace anyway)
+	//        int checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0;
+	//		if(!checksum_correct)
+	//			rx_status->adapter[adapter_no].wrong_crc_cnt++;
+		//low-level packet counter
+		rx_status->adapter[adapter_no].received_packet_cnt++;
+
+	//		if(rx_status->adapter[adapter_no].received_packet_cnt % 1024 == 0) {
+	//			fprintf(stderr, "Signal (card %d): %ddBm\n", adapter_no, rx_status->adapter[adapter_no].current_signal_dbm);
+	//		}
+		rx_status->last_update = time(NULL);
+		//waiting on circular packet buffer to become free
+		uint16_t chk_idx = (pbuff->rx_idx + 1) % (pbuff->pkt_num);
+		while (chk_idx == pbuff->tx_idx) {
+			sched_yield();
+		}
+		//filling packet buffer data length
+		pbuff->packets[pbuff->rx_idx].read_pkt_len = bytes;
+		//since payload buffer provided by PCAP is not saved between PCAP reads, we need to copy it to the packet circular buffer
+//		printf(">>>>Extracted payload len %d\n", plh->nominal_packet_length);
+//		hexdump(pu8Payload, pkt_bytes);
+		memmove(&pbuff->packets[pbuff->rx_idx].packet_data.bData, pu8Payload, pkt_bytes);
+		pbuff->rx_idx = chk_idx;
+		pu8Payload += pkt_bytes;
+		bytes -= pkt_bytes;
+		if (prd.m_nRadiotapFlags & IEEE80211_RADIOTAP_F_FCS) {
+			bytes -= 4;
+			pu8Payload += 4;
+		}
+    } while(bytes > 0);
 }
 //statistics shared memory init
 void status_memory_init(wifibroadcast_rx_status_t *s)
@@ -668,8 +709,7 @@ static void * thread_proc(void *arg)
         }
         //process packets otherwise
         process_payload(
-                (uint8_t *)&prx_data->pkt_buffer.packets[prx_data->pkt_buffer.tx_idx].data,
-                prx_data->pkt_buffer.packets[prx_data->pkt_buffer.tx_idx].read_pkt_len,
+                &prx_data->pkt_buffer.packets[prx_data->pkt_buffer.tx_idx].packet_data.sData,
                 prx_data->blk_buffer);
         prx_data->pkt_buffer.tx_idx = (prx_data->pkt_buffer.tx_idx + 1)
                 % (prx_data->pkt_buffer.pkt_num);
@@ -756,6 +796,7 @@ int main(int argc, char *argv[])
     rx_data.blk_num = param_block_buffers;
     rx_data.blk_buffer = (block_buffer_t *) malloc(
             sizeof(block_buffer_t) * param_block_buffers);
+
     for (i = 0; i < rx_data.blk_num; ++i) {
         rx_data.blk_buffer[i].block_num = -1;
         rx_data.blk_buffer[i].curr_pkt_num = 0;
@@ -782,6 +823,7 @@ int main(int argc, char *argv[])
     pthread_attr_t pattr;
     //raising pthread scheduling priority for new threads
     struct sched_param pt_nice = { -19 };
+
     if (pthread_attr_init(&pattr)) {
         perror("Failed to initialize a thread attributes, aborting...\n");
         return 1;

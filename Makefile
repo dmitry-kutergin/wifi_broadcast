@@ -14,7 +14,8 @@ INCLUDE:=
 LIBS:= 
 endif
 LDFLAGS=$(LIBS) -lrt -lpcap -pthread -lm
-CPPFLAGS=-Wall -g $(INCLUDE) $(CUSTOM_FLAGS) -DTEST_EN -DHEX_DUMP
+#CPPFLAGS=-Wall -g $(INCLUDE) $(CUSTOM_FLAGS) -DTEST_EN -DHEX_DUMP
+CPPFLAGS=-Wall -g $(INCLUDE) $(CUSTOM_FLAGS) -DTEST_EN
 
 APPS=rx tx rx_status rx_alive_test traffic_gen
 

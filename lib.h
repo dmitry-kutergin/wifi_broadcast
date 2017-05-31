@@ -21,6 +21,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <linux/if_ether.h>
+#include <stdio.h>
+#include <ctype.h>
 
 #include "wifibroadcast.h"
 
@@ -58,7 +60,6 @@ typedef struct {
 
 //this sits at the data payload (which is usually right after the wifi_packet_header_t) (inside of FEC)
 typedef struct {
-    uint16_t actual_length;
     uint16_t nominal_packet_length;
     uint8_t num_data_blocks;
     uint8_t num_fecs_blocks;
@@ -90,6 +91,9 @@ void gc_timer(int status, void * arg);
 
 //shared memory garbage collector
 void gc_shm(int status, void * arg);
+
+//printing binary data in ASCII
+void hexdump(void *mem, unsigned int len);
 
 //Radiotap header TX flag addition
 #define IEEE80211_RADIOTAP_F_TX_SEQ 0x0010

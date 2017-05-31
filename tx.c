@@ -85,7 +85,14 @@ struct pkt_struct_t {
 	} IeeeHeader ;
     wifi_packet_header_t wifi_hdr;
     payload_header_t payload_hdr;
-    uint8_t payload[MAX_USER_PACKET_LENGTH];
+    union {
+		struct payload_t{
+			uint16_t len;
+			uint8_t dataBuff[MAX_USER_PACKET_LENGTH];
+		} sPayload __attribute__((packed));
+		uint8_t bPayload[sizeof(struct payload_t)];
+    } payload;
+
 }__attribute__((packed));
 
 //size of all aux headers in transmitted packet
@@ -330,7 +337,7 @@ void fifo_init(fifo_t *fifo, uint8_t fifo_count, uint8_t block_size_data,
 
 //                set_port_no(ps->RadiotapHeader, i + port);
                 //assigning payload buffer pointers to packet structure payload portions
-                fifo->fifo_array[i].pb_overlay[k].data_blocks[j] = ps->payload;
+                fifo->fifo_array[i].pb_overlay[k].data_blocks[j] = ps->payload.bPayload;
 //				fifo->fifo_array[i].pb_overlay[k].fec_blocks[j] =
 //										ps->payload;
             }
@@ -440,55 +447,8 @@ void fifo_create_select_set(fifo_t *fifo, int fifo_count, fd_set *fifo_set,
         }
     }
 }
-#include <stdio.h>
-#include <ctype.h>
-#ifndef HEXDUMP_COLS
-#define HEXDUMP_COLS 32
-#endif
-void hexdump(void *mem, unsigned int len)
-{
-        unsigned int i, j;
 
-        for(i = 0; i < len + ((len % HEXDUMP_COLS) ? (HEXDUMP_COLS - len % HEXDUMP_COLS) : 0); i++)
-        {
-                /* print offset */
-                if(i % HEXDUMP_COLS == 0)
-                {
-                        printf("0x%06x: ", i);
-                }
 
-                /* print hex data */
-                if(i < len)
-                {
-                        printf("%02x ", 0xFF & ((char*)mem)[i]);
-                }
-                else /* end of block, just aligning for ASCII dump */
-                {
-                        printf("   ");
-                }
-
-                /* print ASCII dump */
-                if(i % HEXDUMP_COLS == (HEXDUMP_COLS - 1))
-                {
-                        for(j = i - (HEXDUMP_COLS - 1); j <= i; j++)
-                        {
-                                if(j >= len) /* end of block, not really printing */
-                                {
-                                        putchar(' ');
-                                }
-                                else if(isprint(((char*)mem)[j])) /* printable char */
-                                {
-                                        putchar(0xFF & ((char*)mem)[j]);
-                                }
-                                else /* other char */
-                                {
-                                        putchar('.');
-                                }
-                        }
-                        putchar('\n');
-                }
-        }
-}
 //function that does actual packet transmission, t
 void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
         uint8_t *data, uint16_t blknum, uint8_t is_fec)
@@ -500,11 +460,12 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
     static uint64_t pktnum_all = 0;
     static uint16_t blknum_old = 0;
 //    printf("blknum %d, blknum_old %d, pktnum %d, is_fec %d\n", blknum, blknum_old, pktnum, is_fec);
+    if (blknum != blknum_old)
+            pktnum = 0;
     ps->wifi_hdr.block_number = blknum;
     ps->wifi_hdr.packet_number = pktnum++;
     ps->wifi_hdr.fec_taint = is_fec;
-    if (blknum != blknum_old)
-        pktnum = 0;
+
     blknum_old = blknum;
 
     //copy data
@@ -532,18 +493,21 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
 #else
 
 #ifdef HEX_DUMP
+        fprintf(stderr, ">>>>>>>Packet# %d, Block# %d, packet index %ld, plen %d\n", ps->wifi_hdr.packet_number, blknum, pktnum_all, plen);
         if(is_fec)
-        	printf("FEC tx\n");
+        	printf("FEC tx, len%d\n", plen);
         else
-        	printf("DATA tx\n");
+        	printf("DATA tx, len%d\n", plen);
         hexdump(data, PACKET_OVERHEAD);
         hexdump(&ps->wifi_hdr, sizeof(ps->wifi_hdr));
         hexdump(data + PACKET_OVERHEAD, ps->payload_hdr.nominal_packet_length);
 #else
 
-//        fprintf(stderr, ">>>>>>>Packet# %d, Block# %d, packet index %ld, plen %d\n", pktnum, blknum, pktnum_all, plen);
+        if(!is_fec)
+        	continue;
         write(STDOUT_FILENO, data, plen);
 #endif
+
         if(!is_fec)
 			pktnum_all++;
 
@@ -596,8 +560,7 @@ void pb_process_block(fifo_t * fifo, unsigned int curr_fifo_index,
     	struct pkt_struct_t * ps = (struct pkt_struct_t *) pb->data;
     	//filling packet header data
 		//actual data length
-		ps->payload_hdr.actual_length =
-				curr_fifo->pb_overlay[curr_fifo->curr_proc_overlay].packet_payload_length;
+    	ps->payload.sPayload.len = curr_fifo->pb_overlay[curr_fifo->curr_proc_overlay].packet_payload_length;
 		//current block packet length
 		ps->payload_hdr.nominal_packet_length =
 				curr_fifo->pb_overlay[curr_fifo->curr_proc_overlay].packet_payload_length;
@@ -1177,7 +1140,7 @@ int main(int argc, char *argv[])
 
             //read the data
             struct pkt_struct_t * ps = (struct pkt_struct_t *) pb->data;
-            int inl = read(fifo.fifo_array[i].fd, ps->payload + pb->len,
+            int inl = read(fifo.fifo_array[i].fd, ps->payload.sPayload.dataBuff + pb->len,
                     param_packet_length - pb->len);
             if ((inl < 0) || (inl > (int)(param_packet_length - pb->len))) {
                 perror("reading stdin");
@@ -1205,7 +1168,7 @@ int main(int argc, char *argv[])
 
                 //filling packet header data
                 //actual data length
-                ps->payload_hdr.actual_length = pb->len;
+                ps->payload.sPayload.len = pb->len;
                 //current block packet length
                 ps->payload_hdr.nominal_packet_length =
                         fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length;
@@ -1327,7 +1290,7 @@ int main(int argc, char *argv[])
 
                     }
                     if(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length == 0) {
-                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length = ps->payload_hdr.actual_length;
+                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length = ps->payload.sPayload.len + sizeof(ps->payload.sPayload.len);
                     }
                     if(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length > MAX_USER_PACKET_LENGTH) {
                     	printf("Wrong packet length %d, rate %d, FEC %d, data %d\n", fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length,
@@ -1342,7 +1305,7 @@ int main(int argc, char *argv[])
 //							(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length * fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio),
 //							param_injection_rate);
 //                    printf("Final packet_payload_length %d\n", fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length);
-                    param_packet_length = fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length;
+                    param_packet_length = fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length - sizeof(ps->payload.sPayload.len);
                     param_min_packet_length = param_packet_length;
                     bytes_received = 0;
                 } else {

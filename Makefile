@@ -39,7 +39,7 @@ rx_status: rx_status.o
 rx_alive_test: rx_alive_test.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 	
-traffic_gen: traffic_gen.o
+traffic_gen: lib.o traffic_gen.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 

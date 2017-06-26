@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <math.h>
 #include <argp.h>
+#include "lib.h"
 #define TOLERANCE_HI 25
 #define TOLERANCE_LOW 3
 #define SDV_TARGET 2
@@ -73,9 +74,10 @@ parse_opt (int key, char *arg, struct argp_state *state)
   return 0;
 }
 static struct argp argp = { cmd_options, parse_opt, NULL, doc };
+#define STR_SIZE 6
 int main(int argc, char *argv[])
 {
-	static char tr_buff[0xffff][7];
+	static char tr_buff[0xffff * STR_SIZE];
 	struct opts_t run_opts ={0, 0, SDV_TARGET};
 
 	argp_parse (&argp, argc, argv, 0, 0, &run_opts);
@@ -97,8 +99,9 @@ int main(int argc, char *argv[])
 	setvbuf(stdout, NULL, _IONBF, 0);
 	uint32_t i = 0;
 	for(; i <= 0xffff; ++i){
-		snprintf(tr_buff[i], sizeof(tr_buff[i]), "%.5d;", i);
+		snprintf(&tr_buff[i * STR_SIZE], STR_SIZE + 1, "%.5d;", i);
 	}
+
 	i = 0;
 	uint32_t tr_size = 1;
 	uint32_t prev_tr_size = 0;
@@ -111,13 +114,15 @@ int main(int argc, char *argv[])
 	while(1){
 
 		clock_gettime(CLOCK_MONOTONIC, &ts_before);
-		uint32_t tr_size_bytes = tr_size * sizeof(tr_buff[i]) -1;
+		uint32_t tr_size_bytes = tr_size * STR_SIZE;
 #ifdef DEBUG_BUF_EN
-		snprintf(tr_buff[i], sizeof(tr_buff[i]), "%.5d|", tr_size);
+		snprintf(&tr_buff[i * STR_SIZE], STR_SIZE, "%.5d|", tr_size);
 		if(tr_size > 10)
 			printf("tr_size = %d\n", tr_size);
+		hexdump(&tr_buff[i * STR_SIZE], tr_size_bytes);
 #endif
-		write(STDOUT_FILENO, tr_buff[i], tr_size_bytes);
+
+		write(STDOUT_FILENO, &tr_buff[i * STR_SIZE], tr_size_bytes);
 		clock_gettime(CLOCK_MONOTONIC, &ts_after);
 		i += tr_size;
 		int64_t nsec_elapsed = ((ts_after.tv_sec * 1e9

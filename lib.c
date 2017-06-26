@@ -31,6 +31,7 @@ void lib_init_packet_buffer(packet_buffer_t *p) {
 	p->valid = 0;
 	p->crc_correct = 0;
 	p->tx_done = 0;
+	p->shadow_tx_done = NULL;
 	p->len = 0;
 	p->data = NULL;
 }
@@ -84,17 +85,17 @@ void gc_pcap(int status, void * arg)
 {
     if (arg)
         pcap_close((pcap_t *) arg);
-    printf("%s\n", __PRETTY_FUNCTION__);
+    fprintf(stderr, "%s\n", __PRETTY_FUNCTION__);
 }
 
 //pthread attributes garbage collector
 void gc_pattr(int status, void * arg)
 {
-    if (arg) {
+	if (arg) {
         pthread_attr_t * pa = (pthread_attr_t *) arg;
         pthread_attr_destroy(pa);
     }
-    printf("%s\n", __PRETTY_FUNCTION__);
+	fprintf(stderr, "%s\n", __PRETTY_FUNCTION__);
 }
 //pthread pointers garbage collector
 void gc_pthr(int status, void * arg)
@@ -104,7 +105,7 @@ void gc_pthr(int status, void * arg)
         pthread_cancel(*pthr);
         pthread_join(*pthr, NULL);
     }
-    printf("%s\n", __PRETTY_FUNCTION__);
+    fprintf(stderr, "%s\n", __PRETTY_FUNCTION__);
 }
 //EPoll file descriptor garbage collector
 void gc_epoll(int status, void * arg)
@@ -119,9 +120,9 @@ void gc_epoll(int status, void * arg)
 //timer handle garbage collector
 void gc_timer(int status, void * arg)
 {
-    if (arg) {
-        timer_t * tp_timer = (timer_t *) arg;
-        timer_delete(*tp_timer);
+	if (arg) {
+//        timer_t * tp_timer = (timer_t) arg;
+        timer_delete(/* *tp_timer*/ (timer_t) arg);
     }
     printf("%s\n", __PRETTY_FUNCTION__);
 }

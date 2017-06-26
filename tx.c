@@ -41,6 +41,8 @@
 #define MAX_FIFOS 8
 //number of overlay structures in circular buffer
 #define OVERLAY_NUM 4
+#define DEBUG 0
+
 
 /* this is the template radiotap header we send packets out with */
 #if 0
@@ -97,6 +99,7 @@ struct pkt_struct_t {
 
 //size of all aux headers in transmitted packet
 #define PACKET_OVERHEAD (sizeof(struct tRadiotapHeader) + sizeof(struct ieee80211_hdr_3addr) + sizeof(wifi_packet_header_t) + sizeof(payload_header_t))
+#define PACKET_OVERHEAD_LEN (PACKET_OVERHEAD + sizeof(uint16_t))
 //member of FIFO array
 struct fifo_arr_t {
 //	int seq_nr;
@@ -392,7 +395,7 @@ void gc_fifo(int status, void * arg)
     fifo_t * fifo = (fifo_t *) arg;
     if (fifo)
         fifo_gc(fifo);
-    printf("%s\n", __PRETTY_FUNCTION__);
+    fprintf(stderr, "%s\n", __PRETTY_FUNCTION__);
 }
 //open FIFOs for read
 void fifo_open(fifo_t *fifo, int fifo_count)
@@ -459,9 +462,12 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
     static uint8_t pktnum = 0;
     static uint64_t pktnum_all = 0;
     static uint16_t blknum_old = 0;
+    static uint64_t skipped_pkt = 0;
 //    printf("blknum %d, blknum_old %d, pktnum %d, is_fec %d\n", blknum, blknum_old, pktnum, is_fec);
-    if (blknum != blknum_old)
+    if (blknum != blknum_old){
             pktnum = 0;
+            skipped_pkt = 0;
+    }
     ps->wifi_hdr.block_number = blknum;
     ps->wifi_hdr.packet_number = pktnum++;
     ps->wifi_hdr.fec_taint = is_fec;
@@ -493,7 +499,7 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
 #else
 
 #ifdef HEX_DUMP
-        fprintf(stderr, ">>>>>>>Packet# %d, Block# %d, packet index %ld, plen %d\n", ps->wifi_hdr.packet_number, blknum, pktnum_all, plen);
+        printf(">>>>>>>Packet# %d, Block# %d, packet index %ld, plen %d\n", ps->wifi_hdr.packet_number, blknum, pktnum_all, plen);
         if(is_fec)
         	printf("FEC tx, len%d\n", plen);
         else
@@ -503,9 +509,16 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
         hexdump(data + PACKET_OVERHEAD, ps->payload_hdr.nominal_packet_length);
 #else
 
-        if(!is_fec)
+        if(!is_fec && (skipped_pkt < ps->payload_hdr.num_fecs_blocks)){
+        	skipped_pkt++;
         	continue;
-        write(STDOUT_FILENO, data, plen);
+        }
+
+
+        /*if(!is_fec)*/ {
+//        	write(STDOUT_FILENO, data + PACKET_OVERHEAD_LEN, ps->payload.sPayload.len);
+        	write(STDOUT_FILENO, data, plen);
+        }
 #endif
 
         if(!is_fec)
@@ -560,7 +573,7 @@ void pb_process_block(fifo_t * fifo, unsigned int curr_fifo_index,
     	struct pkt_struct_t * ps = (struct pkt_struct_t *) pb->data;
     	//filling packet header data
 		//actual data length
-    	ps->payload.sPayload.len = curr_fifo->pb_overlay[curr_fifo->curr_proc_overlay].packet_payload_length;
+//    	ps->payload.sPayload.len = curr_fifo->pb_overlay[curr_fifo->curr_proc_overlay].packet_payload_length;
 		//current block packet length
 		ps->payload_hdr.nominal_packet_length =
 				curr_fifo->pb_overlay[curr_fifo->curr_proc_overlay].packet_payload_length;
@@ -705,7 +718,7 @@ void pb_transmit_block(fifo_t * fifo, unsigned int curr_fifo_index) {
 static void sig_handler(int signum)
 {
     //printing tx statistics
-    if (signum == SIGALRM) {
+    if ((signum == SIGALRM) || (signum == SIGWINCH) ) {
         struct timespec now_time;
         clock_gettime(CLOCK_MONOTONIC, &now_time);
         fprintf(stderr, "---Data rate: %.3f KBits/s---\n"/*\033[1A"*/,
@@ -948,7 +961,7 @@ int main(int argc, char *argv[])
         return 1;
     }
     //garbage collector push
-    on_exit(gc_timer, &tp_timer);
+    on_exit(gc_timer, tp_timer);
     //mapping all available signals to our signal handler
     for (i = 1; i <= SIGPWR; ++i) {
         if (i != SIGKILL)
@@ -1140,13 +1153,21 @@ int main(int argc, char *argv[])
 
             //read the data
             struct pkt_struct_t * ps = (struct pkt_struct_t *) pb->data;
+            debug_print(">>>buff: %p, offset: %ld, len: %ld, curr_pb_data: %d, ovl: %d, fifo: %d\n",
+                        			ps->payload.sPayload.dataBuff, pb->len, param_packet_length,
+            						fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data, used_rx_ovl, i);
             int inl = read(fifo.fifo_array[i].fd, ps->payload.sPayload.dataBuff + pb->len,
                     param_packet_length - pb->len);
             if ((inl < 0) || (inl > (int)(param_packet_length - pb->len))) {
-                perror("reading stdin");
+            	fprintf(stderr, "inl: %d, buff: %p, offset: %ld, len: %ld, curr_pb_data: %d, ovl: %d, fifo: %d\n",
+            			inl, ps->payload.sPayload.dataBuff, pb->len, param_packet_length,
+						fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data, used_rx_ovl, i);
+                perror("Error reading stdin");
                 return 1;
             }
-//            printf("Read bytes %d, combined bytes: %d\n", inl, pb->len);
+            if(param_min_packet_length == 1448)
+            	debug_print("\n>>>>>Read bytes: %d, combined bytes: %ld, len: %ld, curr_pb_data: %d, ovl: %d, fifo: %d\n\n",
+            			inl, pb->len, param_packet_length, fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data, used_rx_ovl, i);
             if (inl == 0) {
                 //EOF
                 fprintf(stderr,
@@ -1168,10 +1189,10 @@ int main(int argc, char *argv[])
 
                 //filling packet header data
                 //actual data length
+                uint16_t last_payload_len = pb->len;
                 ps->payload.sPayload.len = pb->len;
                 //current block packet length
-                ps->payload_hdr.nominal_packet_length =
-                        fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length;
+                ps->payload_hdr.nominal_packet_length = fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length;
                 //current FEC ratio
                 ps->payload_hdr.num_data_blocks =
                         fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio;
@@ -1197,8 +1218,10 @@ int main(int argc, char *argv[])
                     clock_gettime(CLOCK_MONOTONIC, &ts_now);
                     //getting previous block data rate
                     curr_byte_rate =
-                            (bytes_received * 1e9) / ((ts_now.tv_sec * 1e9 + ts_now.tv_nsec)
-                                                      - (ts_saved.tv_sec * 1e9 + ts_saved.tv_nsec));
+                            (bytes_received * 1000000000) / ((ts_now.tv_sec * 1000000000 + ts_now.tv_nsec)
+                                                      - (ts_saved.tv_sec * 1000000000 + ts_saved.tv_nsec));
+                    debug_print( "Time delta: %.09f\n", (double)((ts_now.tv_sec * 1000000000 + ts_now.tv_nsec)
+                            - (ts_saved.tv_sec * 1000000000 + ts_saved.tv_nsec)) / 1e9);
 //                    printf("curr_byte_rate %d\n", curr_byte_rate);
                     ts_saved = ts_now;
                     /*formula to calculate rate limit is dependent on FEC parameters and packet length
@@ -1215,31 +1238,37 @@ int main(int argc, char *argv[])
                             MAX_USER_PACKET_LENGTH;
                     //checking if we can go with FEC=DATA=1
                     if (param_injection_rate * fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length >=
-                    		(curr_byte_rate * (PACKET_OVERHEAD + fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length)
+                    		(curr_byte_rate * (PACKET_OVERHEAD_LEN + fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length)
                             * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio / fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio + 1))) {
                         //if so calculate actual packet payload length
                         fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length =
-                                (PACKET_OVERHEAD * curr_byte_rate
+                                (PACKET_OVERHEAD_LEN * curr_byte_rate
                                  * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio / fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio + 1))
                                 / (param_injection_rate - curr_byte_rate
                                         * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio / fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio + 1));
 
-//                        fprintf(stderr, "FEC=DATA=1: ovh %ld, packet_payload_length %d, param_injection_rate %ld, curr_byte_rate %d, fec %d, data %d\n",PACKET_OVERHEAD,
-//                        		fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length, param_injection_rate, curr_byte_rate,
-//								fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio, fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio);
+                        debug_print( "FEC=DATA=1: tot bytes: %ld, ovh %ld, act_len %d, packet_payload_length %d, param_min_packet_length %ld, param_injection_rate %ld, curr_byte_rate %d, fec %d, data %d\n",
+                        		bytes_received, PACKET_OVERHEAD_LEN,
+                        		last_payload_len, fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length, param_min_packet_length, param_injection_rate, curr_byte_rate,
+								fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio, fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio);
                     } else if (param_injection_rate < curr_byte_rate) {
-                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio = 1;
-                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio = MAX_PACKETS_PER_BLOCK - fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio;
+                    	//since current bitrate is higher than maximum we will loose packets anyway, no point in adding any FEC packets
+                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio = 0;
+                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio = 1;
                     	fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length =
                     	                            MAX_USER_PACKET_LENGTH;
+                    	debug_print( "FEC= 1, DATA=%d: tot bytes: %ld, ovh %ld, act_len %d, packet_payload_length %d, param_min_packet_length %ld, param_injection_rate %ld, curr_byte_rate %d, fec %d, data %d\n",
+									fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio, bytes_received, PACKET_OVERHEAD_LEN,
+									last_payload_len, fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length, param_min_packet_length, param_injection_rate, curr_byte_rate,
+									fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio, fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio);
                     } else {
                         //if not trying to get rough FEC and DATA ratios values
                         uint64_t fec_part_ratio =
                                 (param_injection_rate * (uint64_t)fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length - (uint64_t)curr_byte_rate
-                                        * ((uint64_t)fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length + PACKET_OVERHEAD));
+                                        * ((uint64_t)fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length + PACKET_OVERHEAD_LEN));
                         uint64_t data_part_ratio =
                         		(uint64_t)curr_byte_rate * ((uint64_t)fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length
-                                        + PACKET_OVERHEAD);
+                                        + PACKET_OVERHEAD_LEN);
 //                        printf("packet_payload_length %d, curr_byte_rate %d, param_injection_rate %ld, fec_part_ratio %ld, data_part_ratio %ld\n",
 //                                                		fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length,
 //														curr_byte_rate, param_injection_rate,
@@ -1249,7 +1278,7 @@ int main(int argc, char *argv[])
                                 data_part_ratio + fec_part_ratio;
                         uint64_t max_packets_per_frame =
                                 curr_byte_rate / (param_frame_rate
-                                        * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length + PACKET_OVERHEAD));
+                                        * (fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length + PACKET_OVERHEAD_LEN));
                         if ((MAX_PACKETS_PER_BLOCK < max_packets_per_frame) /*||
                         		((param_injection_rate * fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio) <
                         				(curr_byte_rate *
@@ -1266,7 +1295,7 @@ int main(int argc, char *argv[])
                         int64_t packet_payload_length;
                         while(1){
                         	packet_payload_length =
-                                (int64_t)(PACKET_OVERHEAD * curr_byte_rate *
+                                (int64_t)(PACKET_OVERHEAD_LEN * curr_byte_rate *
                                 		(fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio + fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio)) /
 								(int64_t)(param_injection_rate * fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio - curr_byte_rate *
                                 		(fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio + fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio));
@@ -1281,16 +1310,25 @@ int main(int argc, char *argv[])
                         		break;
                         	}
                         }
+                        if(fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio == 0) {
+                        	debug_print( "FEC=0\n");
+                        }
                         fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length = packet_payload_length;
-//                        fprintf(stderr, ">>>packet_payload_length %d, curr_byte_rate %d, param_injection_rate %ld, fec_part_ratio %d, data_part_ratio %d\n",
-//                        		fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length,
-//								curr_byte_rate, param_injection_rate,
-//								fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio,
-//								fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio);
+                        debug_print( ">>>packet_payload_length %d, curr_byte_rate %d, param_injection_rate %ld, fec_part_ratio %d, data_part_ratio %d\n",
+                        		fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length,
+								curr_byte_rate, param_injection_rate,
+								fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio,
+								fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio);
 
                     }
-                    if(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length == 0) {
-                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length = ps->payload.sPayload.len + sizeof(ps->payload.sPayload.len);
+                    if(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length <
+                    		(sizeof(ps->payload.sPayload.len) + 1)) {
+                    	debug_print( "packet_payload_length=%d, bare len: %d\n",
+                    			fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length,  last_payload_len);
+                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length = last_payload_len + sizeof(ps->payload.sPayload.len);
+                    	param_min_packet_length = 0;
+                    } else {
+                        param_min_packet_length = fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length - sizeof(ps->payload.sPayload.len);
                     }
                     if(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length > MAX_USER_PACKET_LENGTH) {
                     	printf("Wrong packet length %d, rate %d, FEC %d, data %d\n", fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length,
@@ -1299,14 +1337,16 @@ int main(int argc, char *argv[])
 								fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio);
                     	exit(1);
                     }
-//                    fprintf(stderr, ">>>>>Packet# %d, Result rate %ld Bytes/s vs param_injection_rate %ld Bytes/s\n", pcnt,
+//                    debug_print( ">>>>>Packet# %d, Result rate %ld Bytes/s vs param_injection_rate %ld Bytes/s\n", pcnt,
 //							((PACKET_OVERHEAD + fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length) *
 //							(fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio + fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio) * curr_byte_rate) /
 //							(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length * fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio),
 //							param_injection_rate);
 //                    printf("Final packet_payload_length %d\n", fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length);
                     param_packet_length = fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length - sizeof(ps->payload.sPayload.len);
-                    param_min_packet_length = param_packet_length;
+					debug_print( "Final packet_payload_length %d, param_min_packet_length: %ld, tot bytes: %ld\n",
+								fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length, param_min_packet_length, bytes_received);
+
                     bytes_received = 0;
                 } else {
 //                	printf("not enough packets\n");

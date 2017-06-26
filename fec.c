@@ -822,7 +822,6 @@ static inline void reduce(unsigned int blockSize,
 		if(erasedIdx < nr_fec_blocks && erased_blocks[erasedIdx] == col) {
 			erasedIdx++;
 		} else {
-			printf("Add mul\n");
 			unsigned char *src = data_blocks[col];
 			int j;
 			for(j=0; j < nr_fec_blocks; j++) {
@@ -831,7 +830,6 @@ static inline void reduce(unsigned int blockSize,
 			}
 		}
     }
-    printf("nr_fec_blocks=%d, erasedIdx=%d\n", nr_fec_blocks, erasedIdx);
     assert(nr_fec_blocks == erasedIdx);
 }
 
@@ -914,7 +912,6 @@ static inline void resolve(int blockSize,
 		}
     }
 }
-
 void fec_decode(unsigned int blockSize,
 
 		unsigned char **data_blocks,
@@ -932,7 +929,6 @@ void fec_decode(unsigned int blockSize,
 #ifdef PROFILE
     begin = rdtsc();
 #endif
-
     reduce(blockSize, data_blocks, nr_data_blocks,
 	   fec_blocks, fec_block_nos,  erased_blocks, nr_fec_blocks);
 

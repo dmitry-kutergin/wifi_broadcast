@@ -45,6 +45,7 @@ typedef struct {
 typedef struct {
 	uint8_t valid;
 	uint8_t crc_correct;
+	uint16_t * shadow_tx_done;
 	uint8_t tx_done;
 	size_t len; //this is the actual length of the packet stored in data
 	uint8_t *data;
@@ -114,5 +115,7 @@ struct ieee80211_hdr_3addr {
 } __attribute__((packed)) __attribute__((aligned (2)));
 
 
+#define debug_print(fmt, ...) \
+            do { if (DEBUG) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0)
 
 

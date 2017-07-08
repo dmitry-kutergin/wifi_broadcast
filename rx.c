@@ -25,6 +25,8 @@
 #include <pthread.h>
 #include <argp.h>
 
+#define WLAN_BUFFER_SIZE 64
+
 #define DEBUG 0
 #define debug_print(fmt, ...) \
             do { if (DEBUG) fprintf(stderr, fmt, __VA_ARGS__); } while (0)
@@ -55,58 +57,61 @@ struct pkt_struct_rx_t {
 #define MAX_BLOCKS 8
 //Packet buffer structure
 struct packets_t {
-	uint16_t read_pkt_len;
-	struct pkt_struct_rx_t data;
+    uint16_t read_pkt_len;
+    struct pkt_struct_rx_t data;
 }__attribute__((packed)) * packets;
 struct pkt_buff_t {
-	volatile uint16_t rx_idx;
-	volatile uint16_t tx_idx;
-	struct packets_t * packets;
-	uint16_t pkt_num;
+    volatile uint16_t rx_idx;
+    volatile uint16_t tx_idx;
+    struct packets_t * packets;
+    uint16_t pkt_num;
 };
 //Data structure for RX block data
 typedef struct {
-	int block_num;
-	int curr_pkt_num;
-	int data_pkts_cnt;
-	int fec_pkts_cnt;
-	payload_header_t payload_hdr;
-	packet_buffer_t *packet_buffer_list;
+    int block_num;
+    int curr_pkt_num;
+    int data_pkts_cnt;
+    int fec_pkts_cnt;
+    payload_header_t payload_hdr;
+    packet_buffer_t *packet_buffer_list;
 } block_buffer_t;
 //Storage for an array of RX blocks
 typedef struct {
-	block_buffer_t * blk_buffer;
-	uint8_t blk_num;
-	struct pkt_buff_t pkt_buffer;
+    block_buffer_t * blk_buffer;
+    uint8_t blk_num;
+    struct pkt_buff_t pkt_buffer;
 } rx_data_t;
 
 wifibroadcast_rx_status_t *rx_status = NULL;
 
 struct opts_t {
-	int port;
-	int data_packets_per_block;
-	int fec_packets_per_block;
-	int block_buffers;
-	int packet_length;
+    int port;
+    int data_packets_per_block;
+    int fec_packets_per_block;
+    int block_buffers;
+    int packet_length;
+    char wlan_list[WLAN_BUFFER_SIZE];
 };
-static struct opts_t run_opts = { 0 , 8, 4, MAX_USER_PACKET_LENGTH, 1};
+static struct opts_t run_opts = { 0 , 8, 4, MAX_USER_PACKET_LENGTH, 2, 0};
 //Version
 const char *argp_program_version = "rx.1.0";
 // Program documentation.
 static char doc[] = "Raw data receiver";
 // Supported opts
 static struct argp_option cmd_options[] =
-		{   { "port", 'p', "port",   0,
-				    "Port number 0-255 (default 0)" },
-			{   0, 	  'b', "count",  0,
-					"Number of data packets in a block (default 8). Needs to match with tx" },
-			{   0, 	  'r', "count",  0,
-					"Number of FEC packets per block (default 4). Needs to match with tx" },
-			{   0,    'f', "bytes",  0,
-					"Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with tx" },
-			{   0,    'd', "blocks", 0,
-					"Number of transmissions blocks that are buffered (default 1). This is needed in case of diversity if one adapter delivers data faster than the other. Note that this increases latency" },
-			{   0 } };
+    {   { "port",              'p', "port",   0,
+                "Port number 0-255 (default 0)" },
+        { "block_packets",     'b', "count",  0,
+                "Number of data packets in a block (default 8). Needs to match with tx" },
+        { "block_fec_packets", 'r', "count",  0,
+                "Number of FEC packets per block (default 4). Needs to match with tx" },
+        { "packet_bytes",      'f', "bytes",  0,
+                "Number of bytes per packet (default 1450. max 1450). This is also the FEC block size. Needs to match with tx" },
+        { "buffered_blocks",   'd', "blocks", 0,
+                "Number of transmissions blocks that are buffered (default 1). This is needed in case of diversity if one adapter delivers data faster than the other. Note that this increases latency" },
+        { "wlan",              'w', "list",   0,
+                "WLAN list" },
+        {   0 } };
 
 //RX data garbage collector
 static void gc_rx_data(int status, void * arg) {
@@ -688,6 +693,16 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
 					MAX_USER_PACKET_LENGTH, opts->packet_length);
 		}
 		break;
+	case 'w': //wlan list
+        if (arg){
+            if (strlen(opts->wlan_list) + strlen(arg) < WLAN_BUFFER_SIZE){
+                if (opts->wlan_list[0]){
+                    strncat(opts->wlan_list, ";", 1);
+                }
+                strncat(opts->wlan_list, arg, 10);
+            }
+        }
+        break;
 	default:
 		return ARGP_ERR_UNKNOWN;
 	}
@@ -703,12 +718,6 @@ int main(int argc, char *argv[]) {
 	int num_interfaces = 0;
 	int i;
 
-	//Replace value of default bytes per packet in Supported opts
-	char temp_buf[200];
-	sprintf(temp_buf, cmd_options[3].doc, MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
-	cmd_options[3].doc = temp_buf;
-	argp.options = cmd_options;
-
 	argp_parse(&argp, argc, argv, 0, 0, &run_opts);
 	rx_data_t rx_data;
 	//disabling stdout buffering
@@ -718,13 +727,14 @@ int main(int argc, char *argv[]) {
 	fec_init();
 #ifndef TEST_EN
 	//opening all supplied interfaces
-	int x = optind;
-	while (x < argc && num_interfaces < MAX_PENUMBRA_INTERFACES) {
-		open_and_configure_interface(argv[x], run_opts.port,
-				interfaces + num_interfaces);
-		++num_interfaces;
-		++x;
-	}
+	char separator[2] = ";";
+    char *arg_value = strtok (run_opts.wlan_list, separator);
+    while (arg_value != NULL && num_interfaces < MAX_PENUMBRA_INTERFACES) {
+        arg_value = strtok (NULL, separator);
+        open_and_configure_interface(arg_value, run_opts.port,
+                        interfaces + num_interfaces);
+        ++num_interfaces;
+    }
 #endif
 	//allocating and initializing all Rx required buffers
 	//block buffers contain both the block_num as well as packet buffers for a block.

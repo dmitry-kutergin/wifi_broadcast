@@ -37,6 +37,7 @@
 //maximum injection rate in Mbytes/s
 #define INJ_RATE_MAX (19000000 / 8) //Bytes/s
 #define MIN_PACKET_LENGTH 256
+#define WLAN_BUFFER_SIZE 64
 
 #define FIFO_NAME "/tmp/fifo%d"
 #define MAX_FIFOS 8
@@ -156,18 +157,18 @@ static unsigned long int bytes_sent = 0;
 struct timespec last_time = {0};
 
 struct opts_t {
-	int port;
-	int fec_packets_per_block;
-	size_t packet_length;
-	int data_packets_per_block;
-	size_t min_packet_length;
-	int fifo_count;
-	int transmission_count;
-	uint64_t injection_rate;
-	int frame_rate;
-	int interleaved;
-	int duplicated;
-	char *wlan_list;
+    int port;
+    int fec_packets_per_block;
+    size_t packet_length;
+    int data_packets_per_block;
+    size_t min_packet_length;
+    int fifo_count;
+    int transmission_count;
+    uint64_t injection_rate;
+    int frame_rate;
+    int interleaved;
+    int duplicated;
+    char wlan_list[WLAN_BUFFER_SIZE];
 };
 
 //Version
@@ -176,33 +177,33 @@ const char *argp_program_version = "tx.1.0";
 static char doc[] = "Raw data transmitter";
 // Supported opts
 static struct argp_option cmd_options[] =
-		{   { "port", 'p', "port",   0,
-			    "Port number 0-255 (default 0)" },
-			{   0, 	  'b', "count",  0,
-					"Number of data packets in a block (default 8). Needs to match with rx" },
-			{   0, 	  'r', "count",  0,
-					"Number of FEC packets per block (default 4). Needs to match with rx" },
-			{   0,    'f', "bytes",  0,
-					"Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with rx" },
-			{   0,    'm', "bytes",  0,
-					"Minimum number of bytes per frame (default 0)" },
-			{"stream",'s', "stream", 0,
-					"If <stream> is > 1 then the parameter changes \"tx\" input from stdin to named FIFOs. Each fifo transports a stream over a different port (starting at -p port and incrementing). FIFO names are \"%s\". (default 1)" },
-			{   0,    'x',  "value", 0,
-					"How often is a block transmitted (default 1)" },
-			{   0,    'i', "Mbps",   0,
-					"Mbits/s transmission rate" },
-			{   0,    'd',    0,     0,
-					"Enable packet duplication through multiple interfaces, otherwise load sharing is performed" },
-			{   0,    'a',  "fps",   0,
-					"Expected video FPS for optimal FEC/frame size calculation" },
+        {   { "port",              'p', "port",   0,
+                    "Port number 0-255 (default 0)" },
+            { "block_packets", 	   'b', "count",  0,
+                    "Number of data packets in a block (default 8). Needs to match with rx" },
+            { "block_fec_packets", 'r', "count",  0,
+                    "Number of FEC packets per block (default 4). Needs to match with rx" },
+            { "packet_bytes",      'f', "bytes",  0,
+                    "Number of bytes per packet (default 1450. max 1450). This is also the FEC block size. Needs to match with rx" },
+            { "min_bytes",         'm', "bytes",  0,
+                    "Minimum number of bytes per frame (default 0)" },
+            { "stream",            's', "stream", 0,
+                    "If <stream> is > 1 then the parameter changes \"tx\" input from stdin to named FIFOs. Each fifo transports a stream over a different port (starting at -p port and incrementing). FIFO names are \"/tmp/fifo%d\". (default 1)" },
+            { "frequency",         'x',  "value", 0,
+                    "How often is a block transmitted (default 1)" },
+            { "rate",              'i', "Mbps",   0,
+                    "Mbits/s transmission rate" },
+            { "duplicate",         'd',    0,     0,
+                    "Enable packet duplication through multiple interfaces, otherwise load sharing is performed" },
+            { "fps",               'a',  "fps",   0,
+                    "Expected video FPS for optimal FEC/frame size calculation" },
 #ifdef INTERLEAVED
-			{   0,    't',    0,     0,
-					"Enable interleaver" },
+            { "interleaver",       't',    0,     0,
+                    "Enable interleaver" },
 #endif
-			{   0,    'w', "list",   0,
-					"WLAN list. Separated by ;" },
-			{   0 } };
+            { "wlan",              'w', "list",   0,
+                    "WLAN list" },
+            {   0 } };
 
 
 #if 0
@@ -902,7 +903,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
 		opts->duplicated = 1;
 		break;
 	case 'w': //wlan list
-		opts->wlan_list = arg;
+	    if (arg){
+	        if (strlen(opts->wlan_list) + strlen(arg) < WLAN_BUFFER_SIZE){
+                if (opts->wlan_list[0]){
+                    strncat(opts->wlan_list, ";", 1);
+                }
+                strncat(opts->wlan_list, arg, 10);
+	        }
+	    }
 		break;
 	case ARGP_KEY_END:
 #ifndef TEST_EN
@@ -970,23 +978,10 @@ int main(int argc, char *argv[])
     int max_fifo_fd = -1;
 #endif
 
-    //Replace value of default bytes per packet in Supported opts
-	char temp_buf_f[200];
-	sprintf(temp_buf_f, cmd_options[3].doc, MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
-	cmd_options[3].doc = temp_buf_f;
-	char temp_buf_s[400];
-	sprintf(temp_buf_s, cmd_options[5].doc, FIFO_NAME);
-	cmd_options[5].doc = temp_buf_s;
-	argp.options = cmd_options;
-
-    printf("Raw data transmitter (c) 2015 befinitiv  GPL2\n");
-
     //default parameters FECs=1 DATA=1 param_packet_length=MAX_USER_PACKET_LENGTH param_injection_rate=24 param_frame_rate=80 param_port=0
     struct opts_t run_opts = { 0 , 4, MAX_USER_PACKET_LENGTH, 8, 0, 1, 1, 24, 80, 0, 0, 0};
     //processing command line arguments
     argp_parse(&argp, argc, argv, 0, 0, &run_opts);
-
-
 
     timer_t tp_timer;
     //creating statistics timer
@@ -1050,7 +1045,7 @@ int main(int argc, char *argv[])
 	char *arg_value = strtok (run_opts.wlan_list, separator);
 	int wlan_list_count =0;
 	while (arg_value != NULL) {
-		wlan_list_count++;
+	    wlan_list_count++;
 		arg_value = strtok (NULL, separator);
 	}
     fifo.num_pcap = wlan_list_count;

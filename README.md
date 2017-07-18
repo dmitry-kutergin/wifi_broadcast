@@ -11,3 +11,10 @@ To crosscompile explicitly to Raspberry Pi download:
   
 Do not forget to clean already compiled files between changes from host compilation to cross compilation and vise versa by:
   - make clean
+  
+Data integrity test example.
+To test data integrity the following shell pipeline can be used:
+  - ./traffic_gen -r 2000000|tee dump_orig|./tx -p 0 -a 78 -i 48 wlan0|tee dump_tx|./rx -p 0 wlan0|pv>dump
+  - Wait several minutes, then Ctrl^c
+  - cat dump_orig | sed -r -e "s/;/\n/g" >dump_orig_n; cat dump | sed -r -e "s/;/\n/g" >dump_n;vimdiff dump_orig_n dump_n
+Discprepancies are normal to be seen at the end, since Ctrl^c kills different processes in different times.

@@ -830,7 +830,6 @@ static inline void reduce(unsigned int blockSize,
 			}
 		}
     }
-
     assert(nr_fec_blocks == erasedIdx);
 }
 
@@ -913,7 +912,6 @@ static inline void resolve(int blockSize,
 		}
     }
 }
-
 void fec_decode(unsigned int blockSize,
 
 		unsigned char **data_blocks,
@@ -933,6 +931,7 @@ void fec_decode(unsigned int blockSize,
 #endif
     reduce(blockSize, data_blocks, nr_data_blocks,
 	   fec_blocks, fec_block_nos,  erased_blocks, nr_fec_blocks);
+
 #ifdef PROFILE
     end = rdtsc();
     reduceTime += end - begin;

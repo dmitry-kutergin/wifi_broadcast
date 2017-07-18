@@ -23,6 +23,9 @@
 #include "radiotap/radiotap_iter.h"
 #include <sys/epoll.h>
 #include <pthread.h>
+#include <argp.h>
+
+#define WLAN_BUFFER_SIZE 64
 
 
 
@@ -30,17 +33,17 @@
 // information from the radiotap header
 
 typedef struct {
-    int m_nChannel;
-    int m_nChannelFlags;
-    int m_nRate;
-    int m_nAntenna;
-    int m_nRadiotapFlags;
+	int m_nChannel;
+	int m_nChannelFlags;
+	int m_nRate;
+	int m_nAntenna;
+	int m_nRadiotapFlags;
 }__attribute__((packed)) PENUMBRA_RADIOTAP_DATA;
 
 typedef struct {
-    pcap_t *ppcap;
-    int selectable_fd;
-    int n80211HeaderLength;
+	pcap_t *ppcap;
+	int selectable_fd;
+	int n80211HeaderLength;
 } monitor_interface_t;
 
 
@@ -89,34 +92,38 @@ typedef struct {
     struct pkt_buff_t pkt_buffer;
 } rx_data_t;
 
-int flagHelp = 0;
-int param_port = 0;
-int param_data_packets_per_block = 8;
-int param_fec_packets_per_block = 4;
-int param_block_buffers = 2;
-int param_packet_length = MAX_USER_PACKET_LENGTH;
 wifibroadcast_rx_status_t *rx_status = NULL;
+
 #define DEBUG 0
 //#define write(...)
-void usage(void)
-{
-    fprintf(stderr,
-            "(c)2015 befinitiv, 2017 dkutergin. Licensed under GPL2\n"
-                    "\n"
-                    "Usage: rx [options] <interfaces>\n\nOptions\n"
-                    "-p <port>   Port number 0-255 (default 0)\n"
-                    "-b <count>  Number of data packets in a block (default 8). Needs to match with tx.\n"
-                    "-r <count>  Number of FEC packets per block (default 4). Needs to match with tx.\n"
-                    "-f <bytes>  Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with tx\n"
-                    "-d <blocks> Number of transmissions blocks that are buffered (default 1). This is needed in case of diversity if one\n"
-                    "            adapter delivers data faster than the other. Note that this increases latency\n"
-                    "\n"
-                    "Example:\n"
-                    "  rx -b 8 -r 4 -f 1024 wlan0 | cat /dev/null  (receive raw packets on wlan0 and throw away payload to /dev/null)\n"
-                    "\n",
-            MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
-    exit(1);
-}
+struct opts_t {
+    int port;
+    int data_packets_per_block;
+    int fec_packets_per_block;
+    int block_buffers;
+    int packet_length;
+    char wlan_list[WLAN_BUFFER_SIZE];
+};
+static struct opts_t run_opts = { 0 , 8, 4, MAX_USER_PACKET_LENGTH, 2, {0}};
+//Version
+const char *argp_program_version = "rx.1.0";
+// Program documentation.
+static char doc[] = "Raw data receiver";
+// Supported opts
+static struct argp_option cmd_options[] =
+    {   { "port",              'p', "port",   0,
+                "Port number 0-255 (default 0)" },
+        { "block_packets",     'b', "count",  0,
+                "Number of data packets in a block (default 8). Needs to match with tx" },
+        { "block_fec_packets", 'r', "count",  0,
+                "Number of FEC packets per block (default 4). Needs to match with tx" },
+        { "packet_bytes",      'f', "bytes",  0,
+                "Number of bytes per packet (default 1450. max 1450). This is also the FEC block size. Needs to match with tx" },
+        { "buffered_blocks",   'd', "blocks", 0,
+                "Number of transmissions blocks that are buffered (default 1). This is needed in case of diversity if one adapter delivers data faster than the other. Note that this increases latency" },
+        { "wlan",              'w', "list",   0,
+                "WLAN list" },
+        {   0 } };
 //RX data garbage collector
 static void gc_rx_data(int status, void * arg)
 {
@@ -141,15 +148,14 @@ void gc_mmap(int status, void * arg)
 }
 //open a PCAP socket on supplied interface
 void open_and_configure_interface(const char *name, int port,
-        monitor_interface_t *interface)
-{
-    struct bpf_program bpfprogram;
-    char szProgram[512];
-    char szErrbuf[PCAP_ERRBUF_SIZE];
-    // open the interface in pcap
-    szErrbuf[0] = '\0';
-    interface->ppcap = pcap_open_live(name, 2048, 1, -1, szErrbuf);
-    if (interface->ppcap == NULL) {
+		monitor_interface_t *interface) {
+	struct bpf_program bpfprogram;
+	char szProgram[512];
+	char szErrbuf[PCAP_ERRBUF_SIZE];
+	// open the interface in pcap
+	szErrbuf[0] = '\0';
+	interface->ppcap = pcap_open_live(name, 2048, 1, -1, szErrbuf);
+	if (interface->ppcap == NULL) {
 //		fprintf(stderr, "\033[1;1HUnable to open %s: %s\n", name, szErrbuf);
         fprintf(stderr, "Unable to open %s: %s\n", name, szErrbuf);
         exit(1);
@@ -183,46 +189,44 @@ void open_and_configure_interface(const char *name, int port,
         default:
             fprintf(stderr, "!!! unknown encapsulation on %s !\n", name);
             exit(1);
+	}
+	//preparing BPF filter to filter only required port number
+	if (pcap_compile(interface->ppcap, &bpfprogram, szProgram, 1, 0) == -1) {
+		puts(szProgram);
+		puts(pcap_geterr(interface->ppcap));
+		exit(1);
+	} else {
+		if (pcap_setfilter(interface->ppcap, &bpfprogram) == -1) {
+			fprintf(stderr, "%s\n", szProgram);
+			fprintf(stderr, "%s\n", pcap_geterr(interface->ppcap));
+		}
+		pcap_freecode(&bpfprogram);
+	}
 
-    }
-    //preparing BPF filter to filter only required port number
-    if (pcap_compile(interface->ppcap, &bpfprogram, szProgram, 1, 0) == -1) {
-        puts(szProgram);
-        puts(pcap_geterr(interface->ppcap));
-        exit(1);
-    } else {
-        if (pcap_setfilter(interface->ppcap, &bpfprogram) == -1) {
-            fprintf(stderr, "%s\n", szProgram);
-            fprintf(stderr, "%s\n", pcap_geterr(interface->ppcap));
-        }
-        pcap_freecode(&bpfprogram);
-    }
-
-    interface->selectable_fd = pcap_get_selectable_fd(interface->ppcap);
+	interface->selectable_fd = pcap_get_selectable_fd(interface->ppcap);
 }
 //resetting block buffer
 void block_buffer_list_reset(block_buffer_t *block_buffer_list,
-        size_t block_buffer_list_len, int block_buffer_len)
-{
+		size_t block_buffer_list_len, int block_buffer_len) {
 	size_t i;
-    block_buffer_t *rb = block_buffer_list;
+	block_buffer_t *rb = block_buffer_list;
 
-    for (i = 0; i < block_buffer_list_len; ++i) {
-        rb->block_num = -1;
+	for (i = 0; i < block_buffer_list_len; ++i) {
+		rb->block_num = -1;
 
-        int j;
-        packet_buffer_t *p = rb->packet_buffer_list;
-        for (j = 0;
-                j < param_data_packets_per_block + param_fec_packets_per_block;
-                ++j) {
-            p->valid = 0;
-            p->crc_correct = 0;
-            p->len = 0;
-            p++;
-        }
+		int j;
+		packet_buffer_t *p = rb->packet_buffer_list;
+		for (j = 0;
+				j < run_opts.data_packets_per_block + run_opts.fec_packets_per_block;
+				++j) {
+			p->valid = 0;
+			p->crc_correct = 0;
+			p->len = 0;
+			p++;
+		}
 
-        rb++;
-    }
+		rb++;
+	}
 }
 #define GET_PKT_DATA(CURR_BUFF, INDEX) (((struct payload_t *)CURR_BUFF->packet_buffer_list[INDEX].data)->dataBuff)
 #define GET_PKT_LEN(CURR_BUFF, INDEX) (((struct payload_t *)CURR_BUFF->packet_buffer_list[INDEX].data)->len)
@@ -383,7 +387,7 @@ void tx_block(block_buffer_t * curr_buff, uint8_t force, int * done_blocks)
             //except those already transmitted
             if (!curr_buff->packet_buffer_list[i].tx_done
 #ifdef CLEAN_OUT
-            && curr_buff->packet_buffer_list[i].valid
+			&& curr_buff->packet_buffer_list[i].valid
 #endif
             ) {
                 //out packet
@@ -552,30 +556,19 @@ void process_payload(struct packets_t * packet, block_buffer_t *block_buffer_lis
 
 }
 
-static const struct radiotap_align_size align_size_000000_00[] = {
-	[0] = { .align = 1, .size = 4 }
-};
+static const struct radiotap_align_size align_size_000000_00[] = { [0] = {
+		.align = 1, .size = 4 } };
 
-static const struct ieee80211_radiotap_namespace vns_array[] = {
-	{
-		.align_size = align_size_000000_00,
-		.n_bits = sizeof(align_size_000000_00),
-		.oui = 0x000000,
-		.subns = 0
-	},
-};
+static const struct ieee80211_radiotap_namespace vns_array[] = { { .align_size =
+		align_size_000000_00, .n_bits = sizeof(align_size_000000_00), .oui =
+		0x000000, .subns = 0 }, };
 
 static const struct ieee80211_radiotap_vendor_namespaces vns = {
-	.ns = vns_array,
-	.n_ns = sizeof(vns_array)/sizeof(vns_array[0]),
-};
+		.ns = vns_array, .n_ns = sizeof(vns_array) / sizeof(vns_array[0]), };
 
 //Low level packet processing before payload processing
 void process_packet(monitor_interface_t *interface, int adapter_no,
-        block_buffer_t *block_buffer_list,
-        struct pkt_buff_t * pbuff)
-{
-
+		block_buffer_t *block_buffer_list, struct pkt_buff_t * pbuff) {
     static uint8_t payloadBuffer[MAX_PACKET_LENGTH];
     static uint32_t carryOverOffset = 0;
     uint32_t readInitLen = MAX_PACKET_LENGTH - carryOverOffset;
@@ -583,8 +576,6 @@ void process_packet(monitor_interface_t *interface, int adapter_no,
     int bytes, lastBytes;
     int pkt_bytes;
     static ssize_t total_bytes = 0;
-
-
 	struct ieee80211_radiotap_iterator rti;
 	PENUMBRA_RADIOTAP_DATA prd;
 	int n;
@@ -787,53 +778,51 @@ void process_packet(monitor_interface_t *interface, int adapter_no,
     }
 }
 //statistics shared memory init
-void status_memory_init(wifibroadcast_rx_status_t *s)
-{
-    s->received_block_cnt = 0;
-    s->damaged_block_cnt = 0;
-    s->tx_restart_cnt = 0;
-    s->wifi_adapter_cnt = 0;
+void status_memory_init(wifibroadcast_rx_status_t *s) {
+	s->received_block_cnt = 0;
+	s->damaged_block_cnt = 0;
+	s->tx_restart_cnt = 0;
+	s->wifi_adapter_cnt = 0;
 
-    int i;
-    for (i = 0; i < MAX_PENUMBRA_INTERFACES; ++i) {
-        s->adapter[i].received_packet_cnt = 0;
-        s->adapter[i].wrong_crc_cnt = 0;
-        s->adapter[i].current_signal_dbm = 0;
-    }
+	int i;
+	for (i = 0; i < MAX_PENUMBRA_INTERFACES; ++i) {
+		s->adapter[i].received_packet_cnt = 0;
+		s->adapter[i].wrong_crc_cnt = 0;
+		s->adapter[i].current_signal_dbm = 0;
+	}
 }
 //statistics shared memory creation
 wifibroadcast_rx_status_t *
-status_memory_open(void)
-{
-    static char buf[128];
-    int fd;
-    //opening shared memory
-    sprintf(buf, "/wifibroadcast_rx_status_%d", param_port);
-    fd = shm_open(buf, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+status_memory_open(void) {
+	static char buf[128];
+	int fd;
+	//opening shared memory
+	sprintf(buf, "/wifibroadcast_rx_status_%d", run_opts.port);
+	fd = shm_open(buf, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
 
-    if (fd < 0) {
-        perror("shm_open");
-        exit(1);
-    }
-    //shared memory GC assignment
-    on_exit(gc_shm, buf);
-    if (ftruncate(fd, sizeof(wifibroadcast_rx_status_t)) == -1) {
-        perror("ftruncate");
-        exit(1);
-    }
-    //mapping shared memory to the process adress space
-    void *retval = mmap(NULL, sizeof(wifibroadcast_rx_status_t),
-                        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (retval == MAP_FAILED) {
-        perror("mmap");
-        exit(1);
-    }
-    //mapped shared memory GC assignment
-    on_exit(gc_mmap, retval);
-    wifibroadcast_rx_status_t *tretval = (wifibroadcast_rx_status_t*) retval;
-    status_memory_init(tretval);
+	if (fd < 0) {
+		perror("shm_open");
+		exit(1);
+	}
+	//shared memory GC assignment
+	on_exit(gc_shm, buf);
+	if (ftruncate(fd, sizeof(wifibroadcast_rx_status_t)) == -1) {
+		perror("ftruncate");
+		exit(1);
+	}
+	//mapping shared memory to the process adress space
+	void *retval = mmap(NULL, sizeof(wifibroadcast_rx_status_t),
+	PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (retval == MAP_FAILED) {
+		perror("mmap");
+		exit(1);
+	}
+	//mapped shared memory GC assignment
+	on_exit(gc_mmap, retval);
+	wifibroadcast_rx_status_t *tretval = (wifibroadcast_rx_status_t*) retval;
+	status_memory_init(tretval);
 
-    return tretval;
+	return tretval;
 
 }
 
@@ -861,85 +850,80 @@ static void * thread_proc(void *arg)
     pthread_exit(arg);
     return arg;
 }
-int main(int argc, char *argv[])
-{
-    monitor_interface_t interfaces[MAX_PENUMBRA_INTERFACES];
-    int num_interfaces = 0;
-    int i;
 
-    rx_data_t rx_data;
-    //disabling stdout buffering
-    setvbuf(stdout, NULL, _IONBF, 0);
-    //reading command line parameters
-    while (1) {
-        int nOptionIndex;
-        static const struct option optiona[] = { { "help", no_argument,
-                &flagHelp, 1 }, { 0, 0, 0, 0 } };
-//      int c = getopt_long (argc, argv, "hp:b:d:r:f:", optiona, &nOptionIndex);
-        int c = getopt_long(argc, argv, "hp:", optiona, &nOptionIndex);
-
-        if (c == -1)
-            break;
-        switch (c) {
-            case 0: // long option
-                break;
-
-            case 'h': // help
-                usage();
-
-            case 'p': //port
-                param_port = atoi(optarg);
-                break;
-
-//	case 'b':
-//	  param_data_packets_per_block = atoi (optarg);
-//	  break;
-//
-//	case 'r':
-//	  param_fec_packets_per_block = atoi (optarg);
-//	  break;
-//
-//	case 'd':
-//	  param_block_buffers = atoi (optarg);
-//	  break;
-//
-//	case 'f': // MTU
-//	  param_packet_length = atoi (optarg);
-//	  break;
-
-            default:
-                fprintf(stderr, "unknown switch %c\n", c);
-                usage();
-                break;
+// Options parser
+static error_t parse_opt(int key, char *arg, struct argp_state *state) {
+	/* Get the input argument from argp_parse, which we
+	 know is a pointer to our opts structure. */
+	struct opts_t *opts = (struct opts_t *) state->input;
+	switch (key) {
+	case 'p':
+		opts->port = arg ? atoi(arg) : 0;
+		break;
+	case 'b':
+		opts->data_packets_per_block = arg ? atoi(arg) : 8;
+		break;
+	case 'r':
+		opts->fec_packets_per_block = arg ? atoi(arg) : 4;
+		break;
+	case 'd':
+		opts->block_buffers = arg ? atoi(arg) : 1;
+		break;
+	case 'f': // MTU
+		opts->packet_length = arg ? atoi(arg) : MAX_USER_PACKET_LENGTH;
+		if (opts->packet_length > MAX_USER_PACKET_LENGTH) {
+			printf(
+					"Packet length is limited to %d bytes (you requested %d bytes)\n",
+					MAX_USER_PACKET_LENGTH, opts->packet_length);
+		}
+		break;
+	case 'w': //wlan list
+        if (arg){
+            if (strlen(opts->wlan_list) + strlen(arg) < WLAN_BUFFER_SIZE){
+                if (opts->wlan_list[0]){
+                    strncat(opts->wlan_list, ";", 1);
+                }
+                strncat(opts->wlan_list, arg, 10);
+            }
         }
-    }
+        break;
+	default:
+		return ARGP_ERR_UNKNOWN;
+	}
+	return 0;
+}
 
-    if (optind >= argc)
-        usage();
+static struct argp argp = { cmd_options, parse_opt, NULL, doc };
 
-    if (param_packet_length > MAX_USER_PACKET_LENGTH) {
-        fprintf(stderr,
-                "Packet length is limited to %d bytes (you requested %d bytes)\n",
-                MAX_USER_PACKET_LENGTH, param_packet_length);
-        return (1);
-    }
-    //initializing FEC decoder
-    fec_init();
+int main(int argc, char *argv[]) {
+
+	monitor_interface_t interfaces[MAX_PENUMBRA_INTERFACES];
+	int num_interfaces = 0;
+	int i;
+
+	argp_parse(&argp, argc, argv, 0, 0, &run_opts);
+	rx_data_t rx_data;
+	//disabling stdout buffering
+	setvbuf(stdout, NULL, _IONBF, 0);
+
+	//initializing FEC decoder
+	fec_init();
 #ifndef TEST_EN
-    //opening all supplied interfaces
-    int x = optind;
-    while (x < argc && num_interfaces < MAX_PENUMBRA_INTERFACES) {
-        open_and_configure_interface(argv[x], param_port,
-                interfaces + num_interfaces);
+	//opening all supplied interfaces
+	char separator[2] = ";";
+    char *arg_value = strtok (run_opts.wlan_list, separator);
+    while (arg_value != NULL && num_interfaces < MAX_PENUMBRA_INTERFACES) {
+        arg_value = strtok (NULL, separator);
+        open_and_configure_interface(arg_value, run_opts.port,
+                        interfaces + num_interfaces);
         ++num_interfaces;
-        ++x;
     }
 #endif
     //allocating and initializing all Rx required buffers
     //block buffers contain both the block_num as well as packet buffers for a block.
-    rx_data.blk_num = param_block_buffers;
+    rx_data.blk_num = run_opts.block_buffers;
     rx_data.blk_buffer = (block_buffer_t *) malloc(
-            sizeof(block_buffer_t) * param_block_buffers);
+            sizeof(block_buffer_t) * (run_opts.block_buffers));
 
     for (i = 0; i < rx_data.blk_num; ++i) {
         rx_data.blk_buffer[i].block_num = -1;
@@ -993,27 +977,27 @@ int main(int argc, char *argv[])
     //garbage collector push
     on_exit(gc_pthr, &proc_thread);
 #ifndef SELECT_EN
-    //creating EPoll handle
-    int epfd = epoll_create(1);
-    if (epfd == -1) {
-        perror("Failed to create epoll descriptor, aborting...\n");
-        return 1;
-    }
-    //garbage collector push
-    on_exit(gc_epoll, &epfd);
-    //setting EPoll to react on arriving data
-    struct epoll_event eearr[MAX_PENUMBRA_INTERFACES];
+	//creating EPoll handle
+	int epfd = epoll_create(1);
+	if (epfd == -1) {
+		perror("Failed to create epoll descriptor, aborting...\n");
+		return 1;
+	}
+	//garbage collector push
+	on_exit(gc_epoll, &epfd);
+	//setting EPoll to react on arriving data
+	struct epoll_event eearr[MAX_PENUMBRA_INTERFACES];
 #ifndef TEST_EN
-    for (i = 0; i < num_interfaces; ++i) {
-        eearr[i].events = EPOLLIN;
-        eearr[i].data.u32 = i;
-        if (epoll_ctl(epfd, EPOLL_CTL_ADD, interfaces[i].selectable_fd,
-                    &eearr[i]) == -1) {
-            perror("Failed to add interface fd to epoll, aborting\n");
-            return 1;
-        }
+	for (i = 0; i < num_interfaces; ++i) {
+		eearr[i].events = EPOLLIN;
+		eearr[i].data.u32 = i;
+		if (epoll_ctl(epfd, EPOLL_CTL_ADD, interfaces[i].selectable_fd,
+						&eearr[i]) == -1) {
+			perror("Failed to add interface fd to epoll, aborting\n");
+			return 1;
+		}
 
-    }
+	}
 #else
     eearr[0].events = EPOLLIN;
     eearr[0].data.u32 = 0;
@@ -1024,24 +1008,24 @@ int main(int argc, char *argv[])
 	}
 #endif
 #endif
-    for (;;) {
+	for (;;) {
 #ifdef SELECT_EN
-        fd_set readset;
-        FD_ZERO(&readset);
-        for (i = 0; i < num_interfaces; ++i)
-        FD_SET(interfaces[i].selectable_fd, &readset);
+		fd_set readset;
+		FD_ZERO(&readset);
+		for (i = 0; i < num_interfaces; ++i)
+		FD_SET(interfaces[i].selectable_fd, &readset);
 
-        int n = select (30, &readset, NULL, NULL, &to);
+		int n = select (30, &readset, NULL, NULL, &to);
 
-        for (i = 0; i < num_interfaces; ++i)
-        {
-            if (n == 0)
-            break;
-            if (FD_ISSET(interfaces[i].selectable_fd, &readset))
-            {
-                process_packet (interfaces + i, i, rx_data.blk_buffer, rx_data.blk_num);
-            }
-        }
+		for (i = 0; i < num_interfaces; ++i)
+		{
+			if (n == 0)
+			break;
+			if (FD_ISSET(interfaces[i].selectable_fd, &readset))
+			{
+				process_packet (interfaces + i, i, rx_data.blk_buffer, rx_data.blk_num);
+			}
+		}
 #else
         int nfds = 0;
         //waiting for packets to arrive
@@ -1058,7 +1042,7 @@ int main(int argc, char *argv[])
                     rx_data.blk_buffer, &rx_data.pkt_buffer);
         }
 #endif
-    }
+	}
 
-    return (0);
+	return (0);
 }

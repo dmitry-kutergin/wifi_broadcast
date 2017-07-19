@@ -96,6 +96,12 @@ void gc_shm(int status, void * arg);
 //printing binary data in ASCII
 void hexdump(void *mem, unsigned int len);
 
+//helper function to find greatest common divisor for the two nubers
+uint64_t get_GCD(uint64_t dividend, uint64_t divisor);
+
+//helper function to simplify fractions
+void simplify_ratio(uint64_t * numerator, uint64_t * denominator);
+
 //Radiotap header TX flag addition
 #define IEEE80211_RADIOTAP_F_TX_SEQ 0x0010
 

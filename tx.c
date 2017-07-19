@@ -508,17 +508,15 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
         hexdump(&ps->wifi_hdr, sizeof(ps->wifi_hdr));
         hexdump(data + PACKET_OVERHEAD, ps->payload_hdr.nominal_packet_length);
 #else
-
+#ifdef PKT_LOSS_EN
         if(!is_fec && (skipped_pkt < ps->payload_hdr.num_fecs_blocks)){
         	skipped_pkt++;
         	continue;
         }
+#endif
 
-
-        /*if(!is_fec)*/ {
 //        	write(STDOUT_FILENO, data + PACKET_OVERHEAD_LEN, ps->payload.sPayload.len);
         	write(STDOUT_FILENO, data, plen);
-        }
 #endif
 
         if(!is_fec)
@@ -1207,6 +1205,8 @@ int main(int argc, char *argv[])
                 if (fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data == fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio
                         - 1) {
 
+                	uint64_t prev_data_packets = fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio;
+                	uint64_t prev_fec_packets = fifo.fifo_array[i].pb_overlay[used_rx_ovl].fec_part_ratio;
                 	fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data++;
                 	//moving to the next overlay
                     fifo.fifo_array[i].curr_rx_overlay =
@@ -1217,13 +1217,199 @@ int main(int argc, char *argv[])
                     struct timespec ts_now;
                     clock_gettime(CLOCK_MONOTONIC, &ts_now);
                     //getting previous block data rate
+                    uint64_t time_delta = (ts_now.tv_sec * 1000000000 + ts_now.tv_nsec)
+											  - (ts_saved.tv_sec * 1000000000 + ts_saved.tv_nsec);
                     curr_byte_rate =
-                            (bytes_received * 1000000000) / ((ts_now.tv_sec * 1000000000 + ts_now.tv_nsec)
-                                                      - (ts_saved.tv_sec * 1000000000 + ts_saved.tv_nsec));
-                    debug_print( "Time delta: %.09f\n", (double)((ts_now.tv_sec * 1000000000 + ts_now.tv_nsec)
-                            - (ts_saved.tv_sec * 1000000000 + ts_saved.tv_nsec)) / 1e9);
+                            (bytes_received * 1000000000) / (time_delta);
+                    debug_print( "Time delta: %.09f\n", (double)(time_delta) / 1e9);
 //                    printf("curr_byte_rate %d\n", curr_byte_rate);
                     ts_saved = ts_now;
+
+/*                    New math
+ *
+ *					bytes_left = param_injection_rate * time_delta - curr_byte_rate * time_delta = (param_injection_rate - curr_byte_rate) / time_delta
+ *
+ *					packet_nominal_length = bytes_received / prev_data_packets;
+ *
+ *
+ *					fec_part_ratio = bytes_left / (PACKET_OVERHEAD + packet_nominal_length);
+ *
+ *					if (fec_part_ratio < 1) {
+ *						data_part_ratio = prev_data_packets / fec_part_ratio;
+ *						if (data_part_ratio >= MAX_PACKETS_PER_BLOCK) {
+ *							data_part_ratio = 1;
+ *							fec_part_ratio = 0;
+ *						} else {
+ *							packet_nominal_length = bytes_left - PACKET_OVERHEAD;
+ *							fec_part_ratio = 1;
+ *						}
+ *
+ *					} else if (fec_part_ratio > prev_data_packets) {
+ *						fec_part_ratio = 1;
+ *						data_part_ratio = 1;
+ *					} else {
+ *						data_part_ratio = prev_data_packets;
+ *
+ *					}
+ *
+ *
+ * 					param_injection_rate = ratio * curr_byte_rate
+ *
+ * 					ratio = (fec_part_ratio + data_part_ratio) / data_part_ratio
+ *
+ * 					param_injection_rate = ((fec_part_ratio + data_part_ratio) / data_part_ratio) * prev_data_packets * (PACKET_OVERHEAD + bytes_received / prev_data_packets) / time_delta
+ *
+ * 					param_injection_rate = ratio * (PACKET_OVERHEAD * prev_data_packets + bytes_received) / time_delta
+ *
+ *
+ *
+ *
+ * 					packet_payload_length = bytes_received / prev_data_packets;
+ * 					packet_nominal_length = packet_payload_length;
+ *
+ * 					(fec_part_ratio + data_part_ratio)/time_delta = prev_data_packets / time_delta;
+ *
+                    param_injection_rate = (fec_part_ratio + data_part_ratio) * (PACKET_OVERHEAD + bytes_received / data_part_ratio) / time_delta;
+
+                    fec_part_ratio + data_part_ratio = param_injection_rate * time_delta / (PACKET_OVERHEAD + bytes_received / prev_data_packets);
+
+                    PACKET_OVERHEAD + bytes_received / prev_data_packets = param_injection_rate * time_delta / (fec_part_ratio + data_part_ratio)
+
+                    packet_nominal_length = param_injection_rate * time_delta / (fec_part_ratio + data_part_ratio) - PACKET_OVERHEAD
+
+                    Example:
+						time_delta = 0.0003
+						param_injection_rate = 2375000;
+						bytes_received = 6;
+						MAX_PACKETS_PER_BLOCK = 64
+						PACKET_OVERHEAD = 43
+						prev_data_packets = 1
+
+					fec_part_ratio + data_part_ratio = 	2375000 * 0.0003 / (43 + 6 / 1) = 14.54
+
+					Example:
+						time_delta = 0.0003
+						param_injection_rate = 2375000;
+						bytes_received = 600;
+						MAX_PACKETS_PER_BLOCK = 64
+						PACKET_OVERHEAD = 43
+						prev_data_packets = 1
+
+					fec_part_ratio + data_part_ratio = 1.11
+
+					fec_part_ratio + prev_data_packets = 1.11
+
+					fec_part_ratio = 0.11
+
+					(fec_part_ratio + prev_data_packets) * scale = MAX_PACKETS_PER_BLOCK
+
+					scale = MAX_PACKETS_PER_BLOCK / (fec_part_ratio + prev_data_packets)
+
+					fec_part_ratio_new = fec_part_ratio * scale = MAX_PACKETS_PER_BLOCK * fec_part_ratio / (fec_part_ratio + prev_data_packets) = 6
+
+					data_part_ratio_new = MAX_PACKETS_PER_BLOCK * prev_data_packets / (fec_part_ratio + prev_data_packets) = 57
+
+					packet_nominal_length = 2375000 * 0.0003 / (6 + 57) - 43 =
+
+					param_injection_rate = (6 + 57) * (43 + 10) / 0.0003 =
+
+					Example:
+						time_delta = 0.0003
+						param_injection_rate = 2375000;
+						bytes_received = 313;
+						MAX_PACKETS_PER_BLOCK = 64
+						PACKET_OVERHEAD = 43
+						prev_data_packets = 1
+
+					fec_part_ratio + data_part_ratio = 	2375000 * 0.0003 / (43 +  313/ 1) = 2
+
+
+                    param_injection_rate = MAX_PACKETS_PER_BLOCK * (PACKET_OVERHEAD + bytes_received / data_part_ratio) / time_delta;
+
+                    param_injection_rate * time_delta / MAX_PACKETS_PER_BLOCK = PACKET_OVERHEAD + bytes_received / data_part_ratio;
+
+                    param_injection_rate * time_delta / MAX_PACKETS_PER_BLOCK - PACKET_OVERHEAD = bytes_received / data_part_ratio;
+
+                    data_part_ratio = bytes_received / (param_injection_rate * time_delta / MAX_PACKETS_PER_BLOCK - PACKET_OVERHEAD);
+
+					packet_nominal_length = bytes_received / data_part_ratio;
+
+					fec_part_ratio = MAX_PACKETS_PER_BLOCK - data_part_ratio;
+
+					PACKET_OVERHEAD + bytes_received / data_part_ratio > 0
+					bytes_received / data_part_ratio > -PACKET_OVERHEAD
+
+					data_part_ratio > bytes_received / -PACKET_OVERHEAD
+					PACKET_OVERHEAD + bytes_received / data_part_ratio <= MAX_USER_PACKET_LENGTH
+
+					bytes_received / data_part_ratio <= MAX_USER_PACKET_LENGTH - PACKET_OVERHEAD
+
+					data_part_ratio => bytes_received / (MAX_USER_PACKET_LENGTH - PACKET_OVERHEAD)
+
+
+					bytes_received / data_part_ratio
+
+					data_part_ratio > 0
+					data_part_ratio <= 64
+
+					fec_part_ratio >= 0
+					fec_part_ratio <= 32
+
+					data_part_ratio + fec_part_ratio <= 64
+
+					data_part_ratio <= 64 - fec_part_ratio
+
+
+
+
+					Example:
+						time_delta = 0.0003
+						param_injection_rate = 2375000;
+						bytes_received = 6;
+						MAX_PACKETS_PER_BLOCK = 64
+						PACKET_OVERHEAD = 43
+
+						data_part_ratio = 6 / (2375000 * 0.0003 / 64 - 43) =
+
+
+					param_injection_rate = pkt_rate * PACKET_OVERHEAD + pkt_rate * packet_payload_length;
+
+					param_injection_rate = ratio * (pkt_rate * PACKET_OVERHEAD + curr_byte_rate);
+
+					pkt_rate = prev_data_packets * 1000000000 / time_delta;
+
+					ratio = param_injection_rate / (pkt_rate * PACKET_OVERHEAD + curr_byte_rate);
+
+					ratio = param_injection_rate /
+							((prev_data_packets * PACKET_OVERHEAD * 1000000000) / time_delta + curr_byte_rate);
+
+
+					ratio = param_injection_rate / (prev_data_packets * PACKET_OVERHEAD / time_delta + bytes_received / time_delta);
+
+					ratio = param_injection_rate * time_delta / (prev_data_packets * PACKET_OVERHEAD + bytes_received);
+					ratio = (fec_part_ratio + data_part_ratio) / data_part_ratio;
+
+					ratio = (MAX_PACKETS_PER_BLOCK) / data_part_ratio;
+
+					data_part_ratio = MAX_PACKETS_PER_BLOCK / ratio;
+
+					fec_part_ratio = MAX_PACKETS_PER_BLOCK - MAX_PACKETS_PER_BLOCK / ratio;*/
+
+
+
+/*                    uint64_t ratio = param_injection_rate * 1000 /
+							((prev_data_packets * PACKET_OVERHEAD * 1000000000) / time_delta + curr_byte_rate);
+
+                    int64_t fec_part_ratio, data_part_ratio;
+                    if (ratio >= 2000) {
+                    	fec_part_ratio = 1;
+                    	data_part_ratio = 1;
+                    } else if ((ratio > 1000) && (ratio < 2000)) {
+                    	data_part_ratio = MAX_PACKETS_PER_BLOCK * 1000 / ratio;
+                    	fec_part_ratio = MAX_PACKETS_PER_BLOCK - data_part_ratio;
+                    	simplify_ratio(&data_part_ratio, &fec_part_ratio);
+                    }*/
+
                     /*formula to calculate rate limit is dependent on FEC parameters and packet length
                      * 	param_injection_rate/curr_byte_rate=(fec_part_ratio/data_part_ratio+1)*(PACKET_OVERHEAD/packet_payload_length + 1)
                      * then:
@@ -1257,6 +1443,8 @@ int main(int argc, char *argv[])
                     	fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio = 1;
                     	fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length =
                     	                            MAX_USER_PACKET_LENGTH;
+
+                    	fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length = (43 * 4000000) / (2375000 - 4000000)
                     	debug_print( "FEC= 1, DATA=%d: tot bytes: %ld, ovh %ld, act_len %d, packet_payload_length %d, param_min_packet_length %ld, param_injection_rate %ld, curr_byte_rate %d, fec %d, data %d\n",
 									fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio, bytes_received, PACKET_OVERHEAD_LEN,
 									last_payload_len, fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length, param_min_packet_length, param_injection_rate, curr_byte_rate,
@@ -1321,6 +1509,8 @@ int main(int argc, char *argv[])
 								fifo.fifo_array[i].pb_overlay[used_rx_ovl].data_part_ratio);
 
                     }
+
+
                     if(fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length <
                     		(sizeof(ps->payload.sPayload.len) + 1)) {
                     	debug_print( "packet_payload_length=%d, bare len: %d\n",

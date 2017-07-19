@@ -188,6 +188,22 @@ void hexdump(void *mem, unsigned int len)
 }
 
 
+inline uint64_t get_GCD(uint64_t dividend, uint64_t divisor)
+{
+	uint64_t temp;
+	while (divisor != 0) {
+		temp = divisor;
+		divisor = dividend % divisor;
+		dividend = temp;
+	}
+	return dividend;
+}
 
+inline void simplify_ratio(uint64_t * numerator, uint64_t * denominator)
+{
+	uint64_t gcd = get_GCD(*numerator, *denominator);
+	*numerator \= gcd;
+	*denominator \= gcd;
+}
 
 

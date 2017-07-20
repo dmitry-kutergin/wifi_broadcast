@@ -202,8 +202,8 @@ inline uint64_t get_GCD(uint64_t dividend, uint64_t divisor)
 inline void simplify_ratio(uint64_t * numerator, uint64_t * denominator)
 {
 	uint64_t gcd = get_GCD(*numerator, *denominator);
-	*numerator \= gcd;
-	*denominator \= gcd;
+	*numerator /= gcd;
+	*denominator /= gcd;
 }
 
 

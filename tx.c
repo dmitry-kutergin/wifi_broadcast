@@ -526,7 +526,8 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
 #else
 
 #ifdef HEX_DUMP
-        printf(">>>>>>>Packet# %d, Block# %d, packet index %ld, plen %d\n", ps->wifi_hdr.packet_number, blknum, pktnum_all, plen);
+        printf(">>>>>>>Packet# %d, Block# %d, packet index %ld, nominal len %d, payload len %d\n",
+               ps->wifi_hdr.packet_number, blknum, pktnum_all, plen, ps->payload.sPayload.len);
         if(is_fec)
         printf("FEC tx, len%d\n", plen);
         else
@@ -541,9 +542,12 @@ void pb_transmit_packet(fifo_t * fifo, unsigned int curr_fifo_index,
             continue;
         }
 #endif
-
-//        	write(STDOUT_FILENO, data + PACKET_OVERHEAD_LEN, ps->payload.sPayload.len);
+#ifdef ONE2ONE_OUT
+        if(!is_fec)
+        	write(STDOUT_FILENO, data + PACKET_OVERHEAD_LEN, ps->payload.sPayload.len);
+#else
         write(STDOUT_FILENO, data, plen);
+#endif
 #endif
 
         if (!is_fec) pktnum_all++;
@@ -1176,7 +1180,7 @@ static uint16_t calc_fec_params(int16_t * data_packets_out,
 //          / prev_data_packets) / (fec_packets + data_packets)) / NSEC_IN_SEC
 //          - PACKET_OVERHEAD_LEN;
 
-/*
+
 
             //Recalculating new packet length with the new parameters
             packet_payload_length = calc_packet_length(curr_byte_rate,
@@ -1191,7 +1195,7 @@ static uint16_t calc_fec_params(int16_t * data_packets_out,
                 //Trying again with another iteration, with the new packet length
                 continue;
             }
-*/
+
 
             fprintf(stderr, "New packet length=%d\n", packet_payload_length);
         //This means FEC part ratio is equal or bigger than data part ratio, which means we can use FEC packets to data packets ratio 1
@@ -1727,7 +1731,7 @@ int main(int argc, char *argv[])
                 ps->payload.sPayload.len = pb->len;
                 //current block packet length
                 ps->payload_hdr.nominal_packet_length = fifo.fifo_array[i]
-                        .pb_overlay[used_rx_ovl].packet_payload_length;
+                        .pb_overlay[used_rx_ovl].packet_payload_length + sizeof(ps->payload.sPayload.len);
                 //current FEC ratio
                 //If FEC part is negative it means we are rate limiting thus sending only data packets without FEC
                 ps->payload_hdr.num_data_blocks =
@@ -1775,8 +1779,8 @@ int main(int argc, char *argv[])
                         used_rx_ovl = fifo.fifo_array[i].curr_rx_overlay;
                     } else {
                         fprintf(stderr, "Received pb->len=%d, needed %d\n",
-                                pb->len, fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length);
-                        if(pb->len >= fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length) {
+                                pb->len, /*fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length*/ future_packet_length);
+                        if(pb->len >= /*fifo.fifo_array[i].pb_overlay[used_rx_ovl].packet_payload_length*/ future_packet_length) {
                             if (fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data >=
                                     (prev_data_packets - 1)) {
                                 fprintf(stderr, "Moving to the next overlay from rate limit: future_fec_packets=%d, prev_data_packets=%d, future_packet_length=%d\n",
@@ -1792,7 +1796,7 @@ int main(int argc, char *argv[])
                             } else {
                                 fprintf(stderr, "Continuing overlay: future_fec_packets=%d, prev_data_packets=%d, future_packet_length=%d, curr_pb_data=%d\n",
                                                                 future_fec_packets, prev_data_packets, future_packet_length, fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data);
-
+#ifdef RATE_LIMITER
                                     if(allow_tx_packet(prev_data_packets, future_fec_packets, &fifo.fifo_array[i].pb_overlay[used_rx_ovl].skip_pb_data)) {
                                         fprintf(stderr, "Transmitting packet: curr_pb_data=%d, skip_pb_data=%d\n",
                                                 fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data,
@@ -1804,6 +1808,10 @@ int main(int argc, char *argv[])
                                                         fifo.fifo_array[i].pb_overlay[used_rx_ovl].skip_pb_data);
                                          pb->len = 0;
                                     }
+#else
+                                    future_packet_length = MAX_USER_PACKET_LENGTH_WO_LEN;
+                                    fifo.fifo_array[i].pb_overlay[used_rx_ovl].curr_pb_data++;
+#endif
                             }
                         }
 
